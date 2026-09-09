@@ -1,0 +1,19 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+_build/python/
+_build/__pycache__/
+src/app/__pycache__/
+*.log
+.idea/
+.vscode/
+node_modules/
+# legacy / build artifacts
+_build/
+release/
+*.zip
+.html-editor-smoke/

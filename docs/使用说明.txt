@@ -1,0 +1,71 @@
+# HTML 可视化编辑器 · HTML Visual Editor
+
+> 像做 PPT 一样编辑任何网页。双击改字、拖拽缩放、插入图片形状，全程不用写代码。
+> Edit any web page as easily as making a PowerPoint. Double-click to edit text, drag to resize, insert images and shapes — no code needed.
+
+---
+
+## 🚀 三步开始 · Quick Start (3 steps)
+
+1. **解压**整个压缩包到一个文件夹（如桌面）。
+   **Unzip** the whole archive into a folder (e.g. your Desktop).
+2. **双击** `启动编辑器.bat`。
+   **Double-click** `启动编辑器.bat`.
+3. **等几秒**，浏览器自动打开编辑器。
+   **Wait a few seconds** — the editor opens in your browser automatically.
+
+就这么简单，无需安装任何东西。
+That's it — nothing to install.
+
+---
+
+## 📖 怎么用 · How to Use
+
+1. 点橙色的 **「打开网页文件或文件夹」** 按钮，选择你的网页文件（`.html`）或整个网站文件夹——**类型会自动识别**。
+   Click the orange **"Open a file or folder"** button and pick an `.html` file or a whole website folder — the type is **detected automatically**.
+2. 也可以直接把文件或文件夹**拖进首页的虚线框**。
+   You can also **drag & drop** a file or folder onto the dashed box on the home page.
+3. **双击**页面文字即可修改；顶部工具栏可插入图片、形状、表格。
+   **Double-click** any text to edit it; use the toolbar to insert images, shapes, and tables.
+4. 多页 PPT 演示会在左侧显示**缩略图**，可点击切换、拖拽排序。
+   Multi-page presentations show **thumbnails** on the left — click to switch, drag to reorder.
+5. 改完点 **保存**，或点 **导出** 下载纯净 HTML。
+   Click **Save** when done, or **Export** to download a clean HTML file.
+
+`samples/` 文件夹里有现成的示例：`示例网页.html`（单文件）和 `示例网站/`（多页 PPT）。
+Ready-made examples are in the `samples/` folder: `示例网页.html` (single file) and `示例网站/` (multi-page deck).
+
+---
+
+## ❓ 常见问题 · FAQ
+
+**Q：弹出黑色窗口正常吗？/ Is the black console window normal?**
+A：正常，它是编辑器的运行引擎，不要关闭。关闭它 = 关闭编辑器。
+Yes — it's the engine running the editor. Closing it stops the editor.
+
+**Q：浏览器没自动打开？/ Browser didn't open automatically?**
+A：手动打开 Chrome 或 Edge，地址栏输入 `http://127.0.0.1:9100` 回车。
+Open Chrome/Edge manually and go to `http://127.0.0.1:9100`.
+
+**Q：提示"Windows 已保护你的电脑"？/ Windows SmartScreen warning?**
+A：点「更多信息」→「仍要运行」。程序无数字签名，属正常现象，可安全使用。
+Click "More info" → "Run anyway". The app isn't digitally signed; it's safe to use.
+
+**Q：用什么浏览器？/ Which browser?**
+A：请选用 **Chrome 或 Edge**（Chrome 内核），体验最佳。
+Use **Chrome or Edge** (Chromium-based) for the best experience.
+
+**Q：会上传我的文件吗？/ Does it upload my files?**
+A：不会。编辑器完全在本机运行，不联网、不上传任何数据。
+No. It runs entirely on your own computer — no network, no uploads.
+
+---
+
+## ⚠️ 注意 · Notes
+
+- 编辑会**真实修改你的文件**，重要文件建议先备份。
+  Edits **modify your real files** — back up important files first.
+- 请把整个文件夹放在一起，不要单独移动其中的文件。
+  Keep the folder intact; don't move individual files out of it.
+
+如有问题请联系提供方。/ Contact the provider for support.
