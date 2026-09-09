@@ -25,7 +25,7 @@ struct EditorChromeView: View {
     }
 }
 
-// MARK: - Toolbar
+// MARK: - PowerPoint-style Ribbon
 
 struct GlassToolbar: View {
     @EnvironmentObject var store: EditorStore
@@ -33,119 +33,228 @@ struct GlassToolbar: View {
     @Binding var inspectorTab: Int
     @State private var showInsert = false
     @State private var imageURL = ""
+    @State private var fontSize = "16"
+    @State private var textColor = "#1f242b"
 
     var body: some View {
-        HStack(spacing: 10) {
-            ToolbarIcon(systemImage: sidebarCollapsed ? "sidebar.left" : "sidebar.squares.left") {
-                sidebarCollapsed.toggle()
-            }
-            ToolbarIcon(systemImage: "folder") { store.pickAndOpen(preferFile: true) }
-            ToolbarIcon(systemImage: "house") { store.goHome() }
-
-            Divider().frame(height: 18)
-
-            if let name = store.currentPage?.name {
-                HStack(spacing: 6) {
-                    Text(store.project?.name ?? "")
-                        .foregroundStyle(Theme.inkSecondary)
-                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.inkTertiary)
-                    Text(name)
-                        .foregroundStyle(Theme.accentDeep)
-                    if store.dirty {
-                        Circle().fill(.blue).frame(width: 6, height: 6)
+        VStack(spacing: 0) {
+            // Title strip
+            HStack(spacing: 10) {
+                ToolbarIcon(systemImage: sidebarCollapsed ? "sidebar.left" : "sidebar.squares.left") {
+                    sidebarCollapsed.toggle()
+                }
+                ToolbarIcon(systemImage: "folder") { store.pickAndOpen(preferFile: true) }
+                ToolbarIcon(systemImage: "house") { store.goHome() }
+                if let name = store.currentPage?.name {
+                    HStack(spacing: 6) {
+                        Text(store.project?.name ?? "").foregroundStyle(Theme.inkSecondary)
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.inkTertiary)
+                        Text(name).foregroundStyle(Theme.accentDeep)
+                        if store.dirty { Circle().fill(.blue).frame(width: 6, height: 6) }
+                        if store.isPPT {
+                            Text("幻灯片 \(store.pptIndex+1)/\(store.pptCount)")
+                                .font(.caption.weight(.bold))
+                                .padding(.horizontal, 8).padding(.vertical, 2)
+                                .background(Theme.accent.opacity(0.18), in: Capsule())
+                                .foregroundStyle(Theme.accentDeep)
+                        }
                     }
+                    .font(.system(size: 12, weight: .medium))
+                }
+                Spacer()
+                Button { store.saveCurrent() } label: {
+                    Label("保存", systemImage: "square.and.arrow.down.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(LinearGradient(colors: [Theme.accent, Theme.accentDeep], startPoint: .top, endPoint: .bottom),
+                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .foregroundStyle(Theme.onAccent)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.currentPage == nil)
+                .opacity(store.currentPage == nil ? 0.4 : 1)
+                ToolbarIcon(systemImage: "play.fill") { store.enterPresent() }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+
+            // Ribbon groups
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 0) {
+                    RibbonGroup(title: "撤销") {
+                        RibbonBtn("撤销", "arrow.uturn.backward") { store.undo() }
+                        RibbonBtn("重做", "arrow.uturn.forward") { store.redo() }
+                    }
+                    RibbonSep()
+                    RibbonGroup(title: "剪贴板") {
+                        RibbonBtn("剪切", "scissors") { store.cutSelected() }
+                        RibbonBtn("复制", "doc.on.doc") { store.copySelected() }
+                        RibbonBtn("粘贴", "doc.on.clipboard") { store.pasteSelected() }
+                        RibbonBtn("副本", "plus.square.on.square") { store.duplicateSelected() }
+                    }
+                    RibbonSep()
+                    RibbonGroup(title: "字体") {
+                        HStack(spacing: 4) {
+                            RibbonBtn("B", nil, bold: true) { store.setFontWeight("700") }
+                            RibbonBtn("I", nil) { store.toggleItalic() }
+                            RibbonBtn("U", nil) { store.toggleUnderline() }
+                        }
+                        HStack(spacing: 4) {
+                            TextField("字号", text: $fontSize)
+                                .textFieldStyle(.plain)
+                                .frame(width: 40)
+                                .padding(.horizontal, 6).padding(.vertical, 4)
+                                .background(Theme.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                                .onSubmit { store.applyStyle(["fontSize": fontSize + "px"]) }
+                            ColorPicker("", selection: Binding(
+                                get: { Color(hexString: textColor) },
+                                set: { c in textColor = c.toHexString(); store.setTextColor(textColor) }
+                            ), supportsOpacity: false)
+                            .labelsHidden()
+                            .frame(width: 28, height: 24)
+                        }
+                    }
+                    RibbonSep()
+                    RibbonGroup(title: "段落") {
+                        RibbonBtn("左", "align.horizontal.left") { store.align("left") }
+                        RibbonBtn("中", "align.horizontal.center") { store.align("center") }
+                        RibbonBtn("右", "align.horizontal.right") { store.align("right") }
+                    }
+                    RibbonSep()
+                    RibbonGroup(title: "插入") {
+                        Menu {
+                            ForEach(0..<7, id: \.self) { i in
+                                Button(["矩形","圆形","椭圆","三角","菱形","星形","箭头"][i]) { store.insertShape(index: i) }
+                            }
+                        } label: { RibbonLabel("形状", "square.on.circle") }
+                        Menu {
+                            Button("文字框") { store.insertNode("textbox") }
+                            Button("标题") { store.insertNode("title") }
+                            Button("按钮") { store.insertNode("button") }
+                            Button("分隔线") { store.insertNode("divider") }
+                            Button("卡片") { store.insertNode("card") }
+                            Button("图标") { store.insertNode("icon") }
+                            Button("表格") { store.insertTable() }
+                            Divider()
+                            Button("图片 URL…") { showInsert = true }
+                        } label: { RibbonLabel("插入", "plus") }
+                    }
+                    RibbonSep()
+                    RibbonGroup(title: "排列") {
+                        RibbonBtn("上移", "arrow.up.to.line") { store.bringForward() }
+                        RibbonBtn("下移", "arrow.down.to.line") { store.sendBackward() }
+                        RibbonBtn("置顶", "arrow.up.to.line.compact") { store.bringToFront() }
+                        RibbonBtn("置底", "arrow.down.to.line.compact") { store.sendToBack() }
+                        RibbonBtn("组合", "square.stack.3d.down.right") { store.groupSelected() }
+                        RibbonBtn("删除", "trash", danger: true) { store.deleteSelected() }
+                    }
+                    RibbonSep()
                     if store.isPPT {
-                        Text("PPT \(store.pptIndex+1)/\(store.pptCount)")
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 8).padding(.vertical, 2)
-                            .background(Theme.accent.opacity(0.18), in: Capsule())
-                            .foregroundStyle(Theme.accentDeep)
+                        RibbonGroup(title: "幻灯片") {
+                            RibbonBtn("上页", "chevron.left") { store.pptNav(-1) }
+                            RibbonBtn("下页", "chevron.right") { store.pptNav(1) }
+                            RibbonBtn("复制页", "plus.square.on.square") { store.pptDup() }
+                            RibbonBtn("删除页", "trash", danger: true) { store.pptDel() }
+                        }
+                        RibbonSep()
+                    }
+                    RibbonGroup(title: "视图") {
+                        RibbonBtn("动效", "sparkles") { inspectorTab = 1 }
+                        RibbonBtn("演示", "play.fill") { store.enterPresent() }
+                        RibbonBtn("导出", "square.and.arrow.down") { store.exportHTML() }
                     }
                 }
-                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
             }
-
-            Spacer()
-
-            if store.isPPT {
-                ToolbarIcon(systemImage: "chevron.left") { store.pptNav(-1) }
-                ToolbarIcon(systemImage: "chevron.right") { store.pptNav(1) }
-                ToolbarIcon(systemImage: "plus.square.on.square") { store.pptDup() }
-                Divider().frame(height: 18)
-            }
-
-            ToolbarIcon(systemImage: "arrow.uturn.backward") { store.undo() }
-            ToolbarIcon(systemImage: "arrow.uturn.forward") { store.redo() }
-            Divider().frame(height: 18)
-
-            Menu {
-                ForEach(0..<7, id: \.self) { i in
-                    Button(["矩形","圆形","椭圆","三角","菱形","星形","箭头"][i]) { store.insertShape(index: i) }
+        }
+        .background {
+            ZStack {
+                Theme.glassPanel.opacity(0.92)
+                if #available(macOS 26.0, *) {
+                    Rectangle().fill(.clear).glassEffect(.regular, in: .rect)
+                } else {
+                    Rectangle().fill(.regularMaterial.opacity(0.5))
                 }
-            } label: {
-                Label("形状", systemImage: "square.on.circle")
-                    .foregroundStyle(Theme.ink)
             }
-            .menuStyle(.borderlessButton)
-            .frame(width: 72)
-
-            Menu {
-                Button("文字框") { store.insertNode("textbox") }
-                Button("标题") { store.insertNode("title") }
-                Button("按钮") { store.insertNode("button") }
-                Button("分隔线") { store.insertNode("divider") }
-                Button("卡片") { store.insertNode("card") }
-                Button("图标") { store.insertNode("icon") }
-                Button("表格") { store.insertTable() }
-                Divider()
-                Button("图片 URL…") { showInsert = true }
-            } label: {
-                Label("插入", systemImage: "plus")
-                    .foregroundStyle(Theme.ink)
-            }
-            .menuStyle(.borderlessButton)
-            .frame(width: 72)
-
-            ToolbarIcon(systemImage: "align.horizontal.left") { store.align("left") }
-            ToolbarIcon(systemImage: "align.horizontal.center") { store.align("center") }
-            ToolbarIcon(systemImage: "align.horizontal.right") { store.align("right") }
-            ToolbarIcon(systemImage: "align.vertical.top") { store.align("top") }
-            ToolbarIcon(systemImage: "align.vertical.center") { store.align("middle") }
-            ToolbarIcon(systemImage: "align.vertical.bottom") { store.align("bottom") }
-
-            Divider().frame(height: 18)
-
-            ToolbarIcon(systemImage: "sparkles") { inspectorTab = 1 }
-            ToolbarIcon(systemImage: "play.fill") { store.enterPresent() }
-            ToolbarIcon(systemImage: "square.and.arrow.down") { store.exportHTML() }
-
-            Button { store.saveCurrent() } label: {
-                Label("保存", systemImage: "square.and.arrow.down.fill")
-                    .font(.system(size: 13, weight: .bold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(
-                        LinearGradient(colors: [Theme.accent, Theme.accentDeep], startPoint: .top, endPoint: .bottom),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    )
-                    .foregroundStyle(Theme.onAccent)
-            }
-            .buttonStyle(.plain)
-            .disabled(store.currentPage == nil)
-            .opacity(store.currentPage == nil ? 0.45 : 1)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Theme.glassPanel.opacity(0.88))
-        .background(.regularMaterial)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Theme.ink.opacity(0.08)).frame(height: 0.5)
-        }
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.ink.opacity(0.08)).frame(height: 0.5) }
         .alert("插入图片", isPresented: $showInsert) {
             TextField("图片 URL", text: $imageURL)
             Button("插入") { if !imageURL.isEmpty { store.insertImage(url: imageURL); imageURL = "" } }
             Button("取消", role: .cancel) {}
         }
+    }
+}
+
+struct RibbonSep: View {
+    var body: some View {
+        Rectangle().fill(Theme.ink.opacity(0.10)).frame(width: 1, height: 44).padding(.vertical, 4)
+    }
+}
+
+struct RibbonGroup<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 6) { content }
+            Text(title)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.inkTertiary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+}
+
+struct RibbonLabel: View {
+    let title: String
+    let icon: String?
+    init(_ title: String, _ icon: String? = nil) { self.title = title; self.icon = icon }
+    var body: some View {
+        VStack(spacing: 3) {
+            if let icon { Image(systemName: icon).font(.system(size: 14)) }
+            else { Text(title).font(.system(size: 13, weight: .bold)) }
+            if icon != nil {
+                Text(title).font(.system(size: 9, weight: .medium))
+            }
+        }
+        .foregroundStyle(Theme.ink)
+        .frame(minWidth: 40, minHeight: 40)
+        .padding(.horizontal, 4)
+        .background(Theme.ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct RibbonBtn: View {
+    let title: String
+    let icon: String?
+    var bold = false
+    var danger = false
+    let action: () -> Void
+    @State private var hover = false
+
+    init(_ title: String, _ icon: String? = nil, bold: Bool = false, danger: Bool = false, action: @escaping () -> Void) {
+        self.title = title; self.icon = icon; self.bold = bold; self.danger = danger; self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                if let icon { Image(systemName: icon).font(.system(size: 13, weight: .medium)) }
+                else { Text(title).font(.system(size: bold ? 15 : 13, weight: bold ? .black : .bold)) }
+                if icon != nil {
+                    Text(title).font(.system(size: 9, weight: .medium))
+                }
+            }
+            .foregroundStyle(danger ? Color.red : Theme.ink)
+            .frame(minWidth: 36, minHeight: 40)
+            .padding(.horizontal, 4)
+            .background(hover ? Theme.ink.opacity(0.10) : Theme.ink.opacity(0.03), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
     }
 }
 
@@ -163,6 +272,28 @@ struct ToolbarIcon: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+    }
+}
+
+extension Color {
+    init(hexString: String) {
+        var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        var v: UInt64 = 0
+        Scanner(string: s).scanHexInt64(&v)
+        if s.count == 6 {
+            self.init(red: Double((v >> 16) & 0xFF)/255, green: Double((v >> 8) & 0xFF)/255, blue: Double(v & 0xFF)/255)
+        } else {
+            self.init(white: 0.12)
+        }
+    }
+    func toHexString() -> String {
+        #if canImport(UIKit)
+        // not used
+        #endif
+        let ns = NSColor(self).usingColorSpace(.sRGB) ?? .black
+        return String(format: "#%02X%02X%02X",
+                      Int(ns.redComponent * 255), Int(ns.greenComponent * 255), Int(ns.blueComponent * 255))
     }
 }
 
@@ -227,23 +358,50 @@ struct CanvasArea: View {
 
     var body: some View {
         ZStack {
-            Theme.canvas
-            GeometryReader { geo in
-                let scale = min(1.4, max(0.3, (geo.size.width - 80) / store.deviceW))
-                ZStack {
-                    EditorWebView(store: store)
-                        .frame(width: store.deviceW, height: store.deviceH)
-                        .scaleEffect(store.presenting ? 1 : scale)
-                        .clipShape(RoundedRectangle(cornerRadius: store.presenting ? 0 : 12, style: .continuous))
-                        .overlay {
-                            if !store.presenting {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(Theme.ink.opacity(0.10), lineWidth: 1)
-                            }
-                        }
-                        .shadow(color: .black.opacity(0.14), radius: 28, y: 12)
+            // Soft liquid-glass desk surface (not flat gray)
+            LinearGradient(
+                colors: [Color(red: 0.94, green: 0.95, blue: 0.97),
+                         Color(red: 0.90, green: 0.91, blue: 0.94)],
+                startPoint: .top, endPoint: .bottom
+            )
+            RadialGradient(colors: [Theme.accent.opacity(0.08), .clear],
+                           center: .topLeading, startRadius: 0, endRadius: 400)
+
+            if store.currentPage == nil {
+                VStack(spacing: 12) {
+                    Image(systemName: "doc.richtext")
+                        .font(.system(size: 42))
+                        .foregroundStyle(Theme.inkTertiary)
+                    Text("打开 HTML 文件开始编辑")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.inkSecondary)
+                    Text("支持单页 · 多页站点 · HTML-PPT")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.inkTertiary)
                 }
-                .frame(width: geo.size.width, height: geo.size.height)
+            } else {
+                GeometryReader { geo in
+                    let scale = min(1.35, max(0.28, (geo.size.width - 60) / max(store.deviceW, 1)))
+                    let scaledW = store.deviceW * scale
+                    let scaledH = store.deviceH * scale
+                    ZStack {
+                        EditorWebView(store: store)
+                            .frame(width: store.deviceW, height: store.deviceH)
+                            .scaleEffect(store.presenting ? 1 : scale)
+                            .background(Color.white)
+                            .clipShape(RoundedRectangle(cornerRadius: store.presenting ? 0 : 10, style: .continuous))
+                            .overlay {
+                                if !store.presenting {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .strokeBorder(Theme.ink.opacity(0.12), lineWidth: 1)
+                                }
+                            }
+                            .shadow(color: .black.opacity(0.16), radius: 30, y: 14)
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .position(x: geo.size.width/2, y: geo.size.height/2 - 10)
+                    .opacity(scaledW > 0 ? 1 : 0)
+                }
             }
 
             VStack {

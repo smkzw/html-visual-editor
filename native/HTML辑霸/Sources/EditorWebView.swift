@@ -17,7 +17,9 @@ struct EditorWebView: NSViewRepresentable {
         wv.navigationDelegate = context.coordinator
         wv.uiDelegate = context.coordinator
         wv.allowsBackForwardNavigationGestures = false
-        wv.setValue(false, forKey: "drawsBackground")
+        // Keep opaque white so failed/empty loads don't show the gray chrome underneath
+        wv.setValue(true, forKey: "drawsBackground")
+        wv.underPageBackgroundColor = .white
         context.coordinator.webView = wv
         store.webView = context.coordinator
         context.coordinator.injectBridgeScript()
@@ -523,6 +525,42 @@ struct EditorWebView: NSViewRepresentable {
               document.body.appendChild(a); a.click(); a.remove();
               post({type:'toast',msg:'已导出'});
             },
+            copySelected(){ if(!selected) return; window.__jibaClip=selected.cloneNode(true); post({type:'toast',msg:'已复制'}); },
+            cutSelected(){ if(!selected) return; pushUndo(); window.__jibaClip=selected.cloneNode(true); selected.remove(); deselect(); post({type:'dirty'}); },
+            pasteSelected(){
+              if(!window.__jibaClip){ post({type:'toast',msg:'剪贴板为空'}); return; }
+              pushUndo();
+              const c=window.__jibaClip.cloneNode(true);
+              c.querySelectorAll('.j-handle').forEach(h=>h.remove());
+              c.classList.remove('j-selected');
+              (selected&&selected.parentNode?selected.parentNode:document.body).appendChild(c);
+              select(c); post({type:'dirty'});
+            },
+            bringForward(){ if(!selected||!selected.nextElementSibling) return; pushUndo(); selected.parentNode.insertBefore(selected.nextElementSibling, selected); post({type:'dirty'}); },
+            sendBackward(){ if(!selected||!selected.previousElementSibling) return; pushUndo(); selected.parentNode.insertBefore(selected, selected.previousElementSibling); post({type:'dirty'}); },
+            bringToFront(){ if(!selected||!selected.parentNode) return; pushUndo(); selected.parentNode.appendChild(selected); post({type:'dirty'}); },
+            sendToBack(){ if(!selected||!selected.parentNode) return; pushUndo(); selected.parentNode.insertBefore(selected, selected.parentNode.firstChild); post({type:'dirty'}); },
+            toggleItalic(){
+              if(!selected) return; pushUndo();
+              const cs=getComputedStyle(selected);
+              selected.style.fontStyle = cs.fontStyle==='italic' ? 'normal' : 'italic';
+              post({type:'dirty'}); emitSelection();
+            },
+            toggleUnderline(){
+              if(!selected) return; pushUndo();
+              const cs=getComputedStyle(selected);
+              selected.style.textDecoration = (cs.textDecorationLine||'').includes('underline') ? 'none' : 'underline';
+              post({type:'dirty'}); emitSelection();
+            },
+            groupSelected(){
+              if(!selected||!selected.parentNode) return; pushUndo();
+              const g=document.createElement('div');
+              g.style.cssText='display:inline-block;position:relative';
+              selected.parentNode.insertBefore(g, selected);
+              g.appendChild(selected);
+              select(g); post({type:'dirty'});
+            },
+            selectAll(){ /* host-side conceptually; select body */ select(document.body); },
             present(on){
               document.documentElement.classList.toggle('j-presenting', !!on);
               if(on){ deselect(); document.querySelectorAll('.j-handle').forEach(h=>h.remove()); }

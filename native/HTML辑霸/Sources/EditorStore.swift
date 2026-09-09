@@ -118,8 +118,17 @@ final class EditorStore: ObservableObject {
         selectedTag = nil
         styleSnapshot = .init()
         let base = BackendManager.shared.baseURL
-        let rel = page.rel.split(separator: "/").map { String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }.joined(separator: "/")
-        let url = base.appendingPathComponent("api/live/\(rel)")
+        // DO NOT use appendingPathComponent("api/live/xxx") — it percent-encodes "/" as %2F
+        // and every live page becomes a blank 404.
+        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        let encodedRel = page.rel.split(separator: "/").map {
+            String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0)
+        }.joined(separator: "/")
+        comps.path = "/api/live/" + encodedRel
+        guard let url = comps.url else {
+            showToast("页面地址无效", icon: "⚠")
+            return
+        }
         webView?.load(url: url, token: liveToken)
     }
 
@@ -189,6 +198,22 @@ final class EditorStore: ObservableObject {
         webView?.eval("window.__jiba.setDevice(\(w),\(h))")
     }
     func exportHTML() { webView?.eval("window.__jiba.export()") }
+
+    // PowerPoint-style ribbon actions
+    func copySelected() { webView?.eval("window.__jiba.copySelected()") }
+    func cutSelected() { webView?.eval("window.__jiba.cutSelected()") }
+    func pasteSelected() { webView?.eval("window.__jiba.pasteSelected()") }
+    func bringForward() { webView?.eval("window.__jiba.bringForward()") }
+    func sendBackward() { webView?.eval("window.__jiba.sendBackward()") }
+    func bringToFront() { webView?.eval("window.__jiba.bringToFront()") }
+    func sendToBack() { webView?.eval("window.__jiba.sendToBack()") }
+    func setFontWeight(_ w: String) { applyStyle(["fontWeight": w]) }
+    func toggleItalic() { webView?.eval("window.__jiba.toggleItalic()") }
+    func toggleUnderline() { webView?.eval("window.__jiba.toggleUnderline()") }
+    func setTextColor(_ hex: String) { applyStyle(["color": hex]) }
+    func setBackgroundColor(_ hex: String) { applyStyle(["backgroundColor": hex]) }
+    func groupSelected() { webView?.eval("window.__jiba.groupSelected()") }
+    func selectAll() { webView?.eval("window.__jiba.selectAll()") }
 }
 
 // MARK: - Models

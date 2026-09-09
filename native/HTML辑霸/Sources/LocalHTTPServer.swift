@@ -361,8 +361,9 @@ final class LocalHTTPServer {
         if FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir), isDir.boolValue {
             target = target.appendingPathComponent("index.html")
         }
+        let ext = target.pathExtension.lowercased()
         let mime: String
-        switch target.pathExtension.lowercased() {
+        switch ext {
         case "html", "htm": mime = "text/html; charset=utf-8"
         case "css": mime = "text/css; charset=utf-8"
         case "js", "mjs": mime = "application/javascript; charset=utf-8"
@@ -373,7 +374,33 @@ final class LocalHTTPServer {
         case "gif": mime = "image/gif"
         case "webp": mime = "image/webp"
         case "ico": mime = "image/x-icon"
+        case "woff": mime = "font/woff"
+        case "woff2": mime = "font/woff2"
+        case "ttf": mime = "font/ttf"
         default: mime = "application/octet-stream"
+        }
+        // Inject <base> so root-relative assets (/style.css) resolve under /api/live/
+        if ext == "html" || ext == "htm" {
+            guard var html = try? String(contentsOf: target, encoding: .utf8) else {
+                Self.sendFile(conn: conn, url: target, mime: mime)
+                return
+            }
+            // Directory of this file relative to live root → base path
+            let dirRel = String(decoded).components(separatedBy: "/").dropLast().joined(separator: "/")
+            let baseHref = dirRel.isEmpty ? "/api/live/" : "/api/live/" + dirRel + "/"
+            let baseTag = "<base href=\"\(baseHref)\">"
+            if let r = html.range(of: "<head[^>]*>", options: .regularExpression) {
+                html.insert(contentsOf: baseTag, at: r.upperBound)
+            } else if let r = html.range(of: "<html[^>]*>", options: .regularExpression) {
+                html.insert(contentsOf: "<head>\(baseTag)</head>", at: r.upperBound)
+            } else {
+                html = baseTag + html
+            }
+            let data = Data(html.utf8)
+            var h = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(data.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+            var out = Data(h.utf8); out.append(data)
+            conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+            return
         }
         Self.sendFile(conn: conn, url: target, mime: mime)
     }
