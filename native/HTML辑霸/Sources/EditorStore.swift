@@ -174,15 +174,35 @@ final class EditorStore: ObservableObject {
 
     // MARK: - Commands to web
 
-    func applyStyle(_ dict: [String: String]) { webView?.eval("window.__jiba.applyStyle(\(dict.jsonLiteral))") }
+    private func requireSelection() -> Bool {
+        guard styleSnapshot.hasSelection, selectedTag != nil else {
+            showToast("请先单击画布中的元素", icon: "ℹ")
+            return false
+        }
+        return true
+    }
+
+    func applyStyle(_ dict: [String: String]) {
+        guard requireSelection() else { return }
+        webView?.eval("window.__jiba.applyStyle(\(dict.jsonLiteral))")
+    }
     func applyAnim(name: String, dur: Double, delay: Double, ease: String, iter: Int) {
         webView?.eval("window.__jiba.applyAnim('\(name)',\(dur),\(delay),'\(ease)',\(iter))")
     }
     func clearAnim() { webView?.eval("window.__jiba.clearAnim()") }
     func previewAnim() { webView?.eval("window.__jiba.previewAnim()") }
-    func align(_ mode: String) { webView?.eval("window.__jiba.align('\(mode)')") }
-    func deleteSelected() { webView?.eval("window.__jiba.deleteSelected()") }
-    func duplicateSelected() { webView?.eval("window.__jiba.duplicateSelected()") }
+    func align(_ mode: String) {
+        guard requireSelection() else { return }
+        webView?.eval("window.__jiba.align('\(mode)')")
+    }
+    func deleteSelected() {
+        guard requireSelection() else { return }
+        webView?.eval("window.__jiba.deleteSelected()")
+    }
+    func duplicateSelected() {
+        guard requireSelection() else { return }
+        webView?.eval("window.__jiba.duplicateSelected()")
+    }
     func insertShape(index: Int) { webView?.eval("window.__jiba.insertShape(\(index))") }
     func insertNode(_ kind: String) { webView?.eval("window.__jiba.insertNode('\(kind)')") }
     func insertTable() { webView?.eval("window.__jiba.insertTable(3,3)") }
@@ -200,19 +220,19 @@ final class EditorStore: ObservableObject {
     func exportHTML() { webView?.eval("window.__jiba.export()") }
 
     // PowerPoint-style ribbon actions
-    func copySelected() { webView?.eval("window.__jiba.copySelected()") }
-    func cutSelected() { webView?.eval("window.__jiba.cutSelected()") }
+    func copySelected() { guard requireSelection() else { return }; webView?.eval("window.__jiba.copySelected()") }
+    func cutSelected() { guard requireSelection() else { return }; webView?.eval("window.__jiba.cutSelected()") }
     func pasteSelected() { webView?.eval("window.__jiba.pasteSelected()") }
-    func bringForward() { webView?.eval("window.__jiba.bringForward()") }
-    func sendBackward() { webView?.eval("window.__jiba.sendBackward()") }
-    func bringToFront() { webView?.eval("window.__jiba.bringToFront()") }
-    func sendToBack() { webView?.eval("window.__jiba.sendToBack()") }
+    func bringForward() { guard requireSelection() else { return }; webView?.eval("window.__jiba.bringForward()") }
+    func sendBackward() { guard requireSelection() else { return }; webView?.eval("window.__jiba.sendBackward()") }
+    func bringToFront() { guard requireSelection() else { return }; webView?.eval("window.__jiba.bringToFront()") }
+    func sendToBack() { guard requireSelection() else { return }; webView?.eval("window.__jiba.sendToBack()") }
     func setFontWeight(_ w: String) { applyStyle(["fontWeight": w]) }
-    func toggleItalic() { webView?.eval("window.__jiba.toggleItalic()") }
-    func toggleUnderline() { webView?.eval("window.__jiba.toggleUnderline()") }
+    func toggleItalic() { guard requireSelection() else { return }; webView?.eval("window.__jiba.toggleItalic()") }
+    func toggleUnderline() { guard requireSelection() else { return }; webView?.eval("window.__jiba.toggleUnderline()") }
     func setTextColor(_ hex: String) { applyStyle(["color": hex]) }
     func setBackgroundColor(_ hex: String) { applyStyle(["backgroundColor": hex]) }
-    func groupSelected() { webView?.eval("window.__jiba.groupSelected()") }
+    func groupSelected() { guard requireSelection() else { return }; webView?.eval("window.__jiba.groupSelected()") }
     func selectAll() { webView?.eval("window.__jiba.selectAll()") }
 }
 

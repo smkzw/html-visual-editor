@@ -381,26 +381,27 @@ struct CanvasArea: View {
                 }
             } else {
                 GeometryReader { geo in
-                    let scale = min(1.35, max(0.28, (geo.size.width - 60) / max(store.deviceW, 1)))
-                    let scaledW = store.deviceW * scale
-                    let scaledH = store.deviceH * scale
+                    let scale = min(1.25, max(0.25, (geo.size.width - 48) / max(store.deviceW, 1)))
+                    let visW = store.deviceW * scale
+                    let visH = store.deviceH * scale
                     ZStack {
+                        // Outer frame = VISUAL size only, so scaled webview cannot cover toolbar
                         EditorWebView(store: store)
                             .frame(width: store.deviceW, height: store.deviceH)
-                            .scaleEffect(store.presenting ? 1 : scale)
+                            .scaleEffect(scale, anchor: .center)
+                            .frame(width: visW, height: visH)
+                            .clipped()
                             .background(Color.white)
-                            .clipShape(RoundedRectangle(cornerRadius: store.presenting ? 0 : 10, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay {
-                                if !store.presenting {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .strokeBorder(Theme.ink.opacity(0.12), lineWidth: 1)
-                                }
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(Theme.ink.opacity(0.14), lineWidth: 1)
                             }
-                            .shadow(color: .black.opacity(0.16), radius: 30, y: 14)
+                            .shadow(color: .black.opacity(0.18), radius: 24, y: 10)
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
-                    .position(x: geo.size.width/2, y: geo.size.height/2 - 10)
-                    .opacity(scaledW > 0 ? 1 : 0)
+                    .position(x: geo.size.width/2, y: geo.size.height/2)
+                    .allowsHitTesting(true)
                 }
             }
 

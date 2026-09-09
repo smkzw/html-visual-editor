@@ -144,6 +144,13 @@ struct EditorWebView: NSViewRepresentable {
             }
         }
 
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            Task { @MainActor in store.showToast("页面加载失败: \(error.localizedDescription)", icon: "⚠") }
+        }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            Task { @MainActor in store.showToast("页面打开失败: \(error.localizedDescription)", icon: "⚠") }
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             if let path = store.currentPage?.path {
                 let esc = path
@@ -360,11 +367,19 @@ struct EditorWebView: NSViewRepresentable {
           }
 
           function detectPPT(){
+            // Only treat as deck when slides are large fixed/absolute layers.
+            // Aggressive `.slide` matching used to hide document sections → blank/black canvas.
             const cands=['.deck > section','.slide','[data-slide]','.slide-item','section.slide'];
             let found=[];
             for(const c of cands){
               const arr=Array.from(document.querySelectorAll(c));
-              if(arr.length>=2){ found=arr; break; }
+              const ok=arr.filter(el=>{
+                const st=getComputedStyle(el);
+                const h=el.offsetHeight, w=el.offsetWidth;
+                const positioned = st.position==='absolute'||st.position==='fixed';
+                return positioned && h>=300 && w>=200;
+              });
+              if(ok.length>=2){ found=ok; break; }
             }
             if(found.length>=2){
               found.forEach((s,i)=>{
