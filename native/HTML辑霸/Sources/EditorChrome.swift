@@ -4,14 +4,11 @@ import SwiftUI
 struct EditorChromeView: View {
     @EnvironmentObject var store: EditorStore
     @State private var sidebarCollapsed = false
-    @State private var inspectorTab = 0 // 0 style 1 anim 2 page
+    @State private var inspectorTab = 0
 
     var body: some View {
         VStack(spacing: 0) {
-            GlassToolbar(
-                sidebarCollapsed: $sidebarCollapsed,
-                inspectorTab: $inspectorTab
-            )
+            GlassToolbar(sidebarCollapsed: $sidebarCollapsed, inspectorTab: $inspectorTab)
             HStack(spacing: 0) {
                 if !sidebarCollapsed {
                     SidebarPanel()
@@ -35,7 +32,6 @@ struct GlassToolbar: View {
     @Binding var sidebarCollapsed: Bool
     @Binding var inspectorTab: Int
     @State private var showInsert = false
-    @State private var showShape = false
     @State private var imageURL = ""
 
     var body: some View {
@@ -51,19 +47,19 @@ struct GlassToolbar: View {
             if let name = store.currentPage?.name {
                 HStack(spacing: 6) {
                     Text(store.project?.name ?? "")
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                        .foregroundStyle(Theme.inkSecondary)
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.inkTertiary)
                     Text(name)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.accentDeep)
                     if store.dirty {
                         Circle().fill(.blue).frame(width: 6, height: 6)
                     }
                     if store.isPPT {
                         Text("PPT \(store.pptIndex+1)/\(store.pptCount)")
-                            .font(.caption.weight(.semibold))
+                            .font(.caption.weight(.bold))
                             .padding(.horizontal, 8).padding(.vertical, 2)
-                            .background(.orange.opacity(0.15), in: Capsule())
-                            .foregroundStyle(.orange)
+                            .background(Theme.accent.opacity(0.18), in: Capsule())
+                            .foregroundStyle(Theme.accentDeep)
                     }
                 }
                 .font(.system(size: 12, weight: .medium))
@@ -80,7 +76,6 @@ struct GlassToolbar: View {
 
             ToolbarIcon(systemImage: "arrow.uturn.backward") { store.undo() }
             ToolbarIcon(systemImage: "arrow.uturn.forward") { store.redo() }
-
             Divider().frame(height: 18)
 
             Menu {
@@ -89,6 +84,7 @@ struct GlassToolbar: View {
                 }
             } label: {
                 Label("形状", systemImage: "square.on.circle")
+                    .foregroundStyle(Theme.ink)
             }
             .menuStyle(.borderlessButton)
             .frame(width: 72)
@@ -105,11 +101,11 @@ struct GlassToolbar: View {
                 Button("图片 URL…") { showInsert = true }
             } label: {
                 Label("插入", systemImage: "plus")
+                    .foregroundStyle(Theme.ink)
             }
             .menuStyle(.borderlessButton)
             .frame(width: 72)
 
-            // Align
             ToolbarIcon(systemImage: "align.horizontal.left") { store.align("left") }
             ToolbarIcon(systemImage: "align.horizontal.center") { store.align("center") }
             ToolbarIcon(systemImage: "align.horizontal.right") { store.align("right") }
@@ -123,32 +119,28 @@ struct GlassToolbar: View {
             ToolbarIcon(systemImage: "play.fill") { store.enterPresent() }
             ToolbarIcon(systemImage: "square.and.arrow.down") { store.exportHTML() }
 
-            Button {
-                store.saveCurrent()
-            } label: {
+            Button { store.saveCurrent() } label: {
                 Label("保存", systemImage: "square.and.arrow.down.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.horizontal, 12)
+                    .font(.system(size: 13, weight: .bold))
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 7)
                     .background(
-                        LinearGradient(colors: [.orange, .orange.opacity(0.9)], startPoint: .top, endPoint: .bottom),
+                        LinearGradient(colors: [Theme.accent, Theme.accentDeep], startPoint: .top, endPoint: .bottom),
                         in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                     )
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.onAccent)
             }
             .buttonStyle(.plain)
             .disabled(store.currentPage == nil)
+            .opacity(store.currentPage == nil ? 0.45 : 1)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background {
-            if #available(macOS 26.0, *) {
-                Rectangle().fill(.clear).glassEffect(.regular, in: .rect)
-            } else {
-                Color.clear.background(.ultraThinMaterial)
-            }
+        .background(Theme.glassPanel.opacity(0.88))
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.ink.opacity(0.08)).frame(height: 0.5)
         }
-        .overlay(alignment: .bottom) { Divider() }
         .alert("插入图片", isPresented: $showInsert) {
             TextField("图片 URL", text: $imageURL)
             Button("插入") { if !imageURL.isEmpty { store.insertImage(url: imageURL); imageURL = "" } }
@@ -165,8 +157,9 @@ struct ToolbarIcon: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.ink)
                 .frame(width: 28, height: 28)
-                .background(hover ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(hover ? Theme.ink.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
@@ -183,7 +176,7 @@ struct SidebarPanel: View {
                 Text(store.isPPT ? "幻灯片 · \(store.pptCount) 页" : "项目文件")
                     .font(.system(size: 11, weight: .bold))
                     .kerning(0.8)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Theme.inkTertiary)
                 Spacer()
             }
             .padding(.horizontal, 14)
@@ -197,18 +190,18 @@ struct SidebarPanel: View {
                         } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: page.ext == ".html" ? "doc.text" : "doc")
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(Theme.accentDeep)
                                 Text(page.name)
                                     .lineLimit(1)
-                                    .foregroundStyle(store.currentPage?.path == page.path ? Color.orange : Color.primary)
+                                    .foregroundStyle(store.currentPage?.path == page.path ? Theme.accentDeep : Theme.ink)
                                 Spacer()
                             }
-                            .font(.system(size: 12))
+                            .font(.system(size: 12, weight: .medium))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 7)
                             .background(
                                 store.currentPage?.path == page.path
-                                    ? Color.orange.opacity(0.12)
+                                    ? Theme.accent.opacity(0.16)
                                     : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                             )
@@ -219,8 +212,11 @@ struct SidebarPanel: View {
                 .padding(8)
             }
         }
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .trailing) { Divider() }
+        .background(Theme.glassPanel.opacity(0.78))
+        .background(.regularMaterial)
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(Theme.ink.opacity(0.08)).frame(width: 0.5)
+        }
     }
 }
 
@@ -231,7 +227,7 @@ struct CanvasArea: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.03)
+            Theme.canvas
             GeometryReader { geo in
                 let scale = min(1.4, max(0.3, (geo.size.width - 80) / store.deviceW))
                 ZStack {
@@ -242,10 +238,10 @@ struct CanvasArea: View {
                         .overlay {
                             if !store.presenting {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(.black.opacity(0.08), lineWidth: 1)
+                                    .strokeBorder(Theme.ink.opacity(0.10), lineWidth: 1)
                             }
                         }
-                        .shadow(color: .black.opacity(0.12), radius: 24, y: 10)
+                        .shadow(color: .black.opacity(0.14), radius: 28, y: 12)
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
             }
@@ -254,15 +250,20 @@ struct CanvasArea: View {
                 Spacer()
                 HStack(spacing: 10) {
                     GlassChip {
-                        Button { store.setZoom(max(0.25, Double(store.zoom) - 0.1)) } label: { Image(systemName: "minus") }
+                        Button { store.setZoom(max(0.25, Double(store.zoom) - 0.1)) } label: {
+                            Image(systemName: "minus").foregroundStyle(Theme.ink)
+                        }
                         Text("\(Int(store.zoom * 100))%")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Theme.ink)
                             .frame(width: 40)
-                        Button { store.setZoom(min(2.5, Double(store.zoom) + 0.1)) } label: { Image(systemName: "plus") }
+                        Button { store.setZoom(min(2.5, Double(store.zoom) + 0.1)) } label: {
+                            Image(systemName: "plus").foregroundStyle(Theme.ink)
+                        }
                         Divider().frame(height: 12)
-                        Button("桌面") { store.setDevice(w: 1280, h: 800) }
-                        Button("平板") { store.setDevice(w: 768, h: 1024) }
-                        Button("手机") { store.setDevice(w: 390, h: 844) }
+                        Button("桌面") { store.setDevice(w: 1280, h: 800) }.foregroundStyle(Theme.ink)
+                        Button("平板") { store.setDevice(w: 768, h: 1024) }.foregroundStyle(Theme.ink)
+                        Button("手机") { store.setDevice(w: 390, h: 844) }.foregroundStyle(Theme.ink)
                     }
                 }
                 .buttonStyle(.plain)
@@ -277,12 +278,12 @@ struct GlassChip<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         HStack(spacing: 8) { content }
-            .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
+            .background(Theme.glassChip, in: Capsule())
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.panelStroke, lineWidth: 0.6))
+            .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
     }
 }
 
@@ -301,7 +302,7 @@ struct InspectorPanel: View {
             }
             .padding(8)
 
-            Divider()
+            Rectangle().fill(Theme.ink.opacity(0.08)).frame(height: 0.5)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -312,8 +313,11 @@ struct InspectorPanel: View {
                 .padding(14)
             }
         }
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .leading) { Divider() }
+        .background(Theme.glassPanel.opacity(0.82))
+        .background(.regularMaterial)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Theme.ink.opacity(0.08)).frame(width: 0.5)
+        }
     }
 }
 
@@ -324,11 +328,11 @@ struct TabBtn: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 12, weight: .bold))
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(active ? Color.orange.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .foregroundStyle(active ? Color.orange : Color.secondary)
+                .padding(.vertical, 7)
+                .background(active ? Theme.accent.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .foregroundStyle(active ? Theme.accentDeep : Theme.inkSecondary)
         }
         .buttonStyle(.plain)
     }
@@ -345,14 +349,12 @@ struct StyleInspector: View {
     var body: some View {
         if let label = store.selectedLabel, store.styleSnapshot.hasSelection {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text(label)
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(.orange.opacity(0.12), in: Capsule())
-                        .foregroundStyle(.orange)
-                    Spacer()
-                }
+                Text(label)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Theme.accent.opacity(0.18), in: Capsule())
+                    .foregroundStyle(Theme.accentDeep)
+
                 InspectorField(title: "字号", text: $fontSize)
                     .onChange(of: fontSize) { _, v in store.applyStyle(["fontSize": v + "px"]) }
                 InspectorField(title: "颜色", text: $colorHex)
@@ -393,10 +395,10 @@ struct StyleInspector: View {
             VStack(spacing: 10) {
                 Image(systemName: "cursorarrow.click.2")
                     .font(.system(size: 28))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Theme.inkTertiary)
                 Text("单击画布元素开始编辑\n双击修改文字")
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.inkSecondary)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
@@ -425,7 +427,7 @@ struct AnimInspector: View {
         if !store.styleSnapshot.hasSelection {
             Text("请先选中画布中的元素")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.inkSecondary)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.top, 30)
         } else {
@@ -438,7 +440,6 @@ struct AnimInspector: View {
                         }
                     }
                 }
-
                 SectionHeader("强调")
                 FlowLayout(spacing: 6) {
                     ForEach(emphasis, id: \.0) { item in
@@ -447,7 +448,6 @@ struct AnimInspector: View {
                         }
                     }
                 }
-
                 SectionHeader("参数")
                 InspectorField(title: "时长 s", text: $dur)
                 InspectorField(title: "延迟 s", text: $delay)
@@ -458,9 +458,8 @@ struct AnimInspector: View {
                     Text("缓出").tag("ease-out")
                     Text("弹簧").tag("cubic-bezier(.2,.9,.25,1.15)")
                 }
-                .font(.system(size: 12))
+                .foregroundStyle(Theme.ink)
                 InspectorField(title: "次数 0=∞", text: $iter)
-
                 HStack(spacing: 8) {
                     GlassMiniBtn("播放") { store.previewAnim() }
                     GlassMiniBtn("清除", danger: true) { store.clearAnim() }
@@ -480,8 +479,8 @@ struct PageInfoInspector: View {
             InfoRow("类型", store.isPPT ? "HTML-PPT · \(store.pptCount) 页" : "静态页面")
             if store.dirty {
                 Text("有未保存的修改")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.orange)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accentDeep)
             }
         }
     }
@@ -493,8 +492,8 @@ struct InfoRow: View {
     init(_ k: String, _ v: String) { self.k = k; self.v = v }
     var body: some View {
         HStack {
-            Text(k).foregroundStyle(.secondary).frame(width: 40, alignment: .leading)
-            Text(v).lineLimit(2)
+            Text(k).foregroundStyle(Theme.inkTertiary).frame(width: 40, alignment: .leading)
+            Text(v).lineLimit(2).foregroundStyle(Theme.ink)
             Spacer()
         }
         .font(.system(size: 12))
@@ -508,7 +507,7 @@ struct SectionHeader: View {
         Text(title)
             .font(.system(size: 11, weight: .bold))
             .kerning(0.8)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(Theme.inkTertiary)
             .padding(.top, 4)
     }
 }
@@ -520,14 +519,15 @@ struct InspectorField: View {
         HStack {
             Text(title)
                 .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.inkSecondary)
                 .frame(width: 64, alignment: .leading)
             TextField("", text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.ink)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
-                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(Theme.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
     }
 }
@@ -546,11 +546,14 @@ struct GlassMiniBtn: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 11, weight: .bold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
-                .background((danger ? Color.red.opacity(0.12) : Color.primary.opacity(0.06)), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .foregroundStyle(danger ? Color.red : Color.primary)
+                .background(
+                    (danger ? Color.red.opacity(0.12) : Theme.ink.opacity(0.07)),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .foregroundStyle(danger ? Color.red : Theme.ink)
         }
         .buttonStyle(.plain)
     }
@@ -563,17 +566,16 @@ struct AnimChip: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 11, weight: .semibold))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(active ? Color.orange.opacity(0.2) : Color.primary.opacity(0.06), in: Capsule())
-                .foregroundStyle(active ? Color.orange : Color.primary)
+                .background(active ? Theme.accent.opacity(0.22) : Theme.ink.opacity(0.06), in: Capsule())
+                .foregroundStyle(active ? Theme.accentDeep : Theme.ink)
         }
         .buttonStyle(.plain)
     }
 }
 
-/// Simple flow layout for chips
 struct FlowLayout: Layout {
     var spacing: CGFloat = 6
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
