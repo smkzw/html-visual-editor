@@ -26,11 +26,6 @@ struct RootView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .allowsHitTesting(false)
             }
-
-            if store.presenting {
-                PresentOverlay()
-                    .transition(.opacity)
-            }
         }
         .animation(.smooth(duration: 0.28), value: store.phase)
         .animation(.smooth(duration: 0.2), value: store.toast)
@@ -122,7 +117,10 @@ struct LandingView: View {
                     }
                     HStack(spacing: 10) {
                         GlassButton(title: "示例页面", systemImage: "doc.text") {
-                            store.openSampleDemo()
+                            store.openSample("demo-page.html")
+                        }
+                        GlassButton(title: "示例 PPT", systemImage: "rectangle.stack") {
+                            store.openSample("demo-ppt.html")
                         }
                         GlassButton(title: "打开文件夹", systemImage: "square.grid.2x2") {
                             store.pickAndOpen(preferFile: false)
@@ -161,7 +159,7 @@ struct BrandHeader: View {
             Text("HTML辑霸")
                 .font(.system(size: 22, weight: .heavy, design: .rounded))
                 .foregroundStyle(Theme.ink)
-            Text("v4.2")
+            Text("v4.3")
                 .font(.caption.weight(.bold))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
@@ -199,13 +197,13 @@ struct PreviewStage: View {
                         .font(.system(size: 10, weight: .bold))
                         .kerning(1.5)
                         .foregroundStyle(Theme.accentDeep)
-                    Text("新一代 临床数据平台")
+                    Text("所见即所得的 HTML 编辑台")
                         .font(.system(size: 26, weight: .heavy))
                         .foregroundStyle(Theme.ink)
                     RoundedRectangle(cornerRadius: 4).fill(Theme.ink.opacity(0.12)).frame(height: 8)
                     RoundedRectangle(cornerRadius: 4).fill(Theme.ink.opacity(0.09)).frame(width: 220, height: 8)
                     RoundedRectangle(cornerRadius: 4).fill(Theme.ink.opacity(0.06)).frame(width: 160, height: 8)
-                    Text("了解详情")
+                    Text("开始编辑")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(Theme.onAccent)
                         .padding(.horizontal, 14)
@@ -289,36 +287,5 @@ struct StatusPill: View {
         .background(Theme.glassChip, in: Capsule())
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.panelStroke, lineWidth: 0.6))
-    }
-}
-
-// MARK: - Present overlay
-
-struct PresentOverlay: View {
-    @EnvironmentObject var store: EditorStore
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            VStack {
-                Spacer()
-                HStack(spacing: 14) {
-                    Button { store.pptNav(-1) } label: { Image(systemName: "chevron.left") }
-                    Text(store.isPPT ? "\(store.pptIndex+1) / \(store.pptCount)" : "演示中")
-                        .font(.system(size: 13, design: .monospaced))
-                        .frame(minWidth: 56)
-                    Button { store.pptNav(1) } label: { Image(systemName: "chevron.right") }
-                    Divider().frame(height: 14)
-                    Button("退出") { store.exitPresent() }
-                        .keyboardShortcut(.escape)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.white.opacity(0.14), in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
-                .padding(.bottom, 22)
-            }
-        }
     }
 }

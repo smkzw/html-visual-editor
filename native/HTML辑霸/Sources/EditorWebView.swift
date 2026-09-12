@@ -22,7 +22,13 @@ struct EditorWebView: NSViewRepresentable {
         wv.underPageBackgroundColor = .white
         context.coordinator.webView = wv
         store.webView = context.coordinator
+        context.coordinator.dbg("makeNSView")
         context.coordinator.injectBridgeScript()
+        // The store may have picked currentPage before this webview mounted
+        // (phase switch happens one frame earlier) — replay the load now.
+        if let page = store.currentPage {
+            DispatchQueue.main.async { store.loadPage(page, force: true) }
+        }
         return wv
     }
 
@@ -34,7 +40,8 @@ struct EditorWebView: NSViewRepresentable {
         var store: EditorStore
         weak var webView: WKWebView?
         let controller = WKUserContentController()
-        private var pendingLoad: (URL, String?)?
+        /// Page load requested before the WKWebView was mounted; replayed in makeNSView.
+        var pendingLoad: (URL, String?)?
 
         init(store: EditorStore) {
             self.store = store
@@ -51,28 +58,31 @@ struct EditorWebView: NSViewRepresentable {
         }
 
         func load(url: URL, token: String?) {
-            // Set session cookie so sub-resources (CSS/JS/images) authenticate too
-            if let token, let host = url.host {
-                let cookie = HTTPCookie(properties: [
-                    .domain: host,
-                    .path: "/",
-                    .name: "project_token",
-                    .value: token,
-                    .secure: "FALSE",
+            // The store can request a load one frame before SwiftUI mounts the
+            // webview (phase switch). Queue it and replay on attach.
+            guard let webView else {
+                pendingLoad = (url, token)
+                dbg("load queued (webview not mounted)")
+                return
+            }
+            dbg("load called \(url.absoluteString)")
+            // Set session cookie so sub-resources (CSS/JS/images) authenticate too.
+            // NOTE: do NOT wait for the setCookie completion — it can be dropped
+            // (observed on macOS 26) and the main load never dispatches.
+            var req = URLRequest(url: url)
+            if let token {
+                req.setValue(token, forHTTPHeaderField: "X-Project-Token")
+                if let host = url.host,
+                   let cookie = HTTPCookie(properties: [
+                    .domain: host, .path: "/", .name: "project_token",
+                    .value: token, .secure: "FALSE",
                     .expires: Date().addingTimeInterval(86400)
-                ])
-                if let cookie, let store = webView?.configuration.websiteDataStore.httpCookieStore {
-                    store.setCookie(cookie) { [weak self] in
-                        var req = URLRequest(url: url)
-                        req.setValue(token, forHTTPHeaderField: "X-Project-Token")
-                        self?.webView?.load(req)
-                    }
-                    return
+                   ]) {
+                    webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
                 }
             }
-            var req = URLRequest(url: url)
-            if let token { req.setValue(token, forHTTPHeaderField: "X-Project-Token") }
-            webView?.load(req)
+            dbg("dispatching load")
+            webView.load(req)
         }
 
         func loadBlank() {
@@ -86,7 +96,9 @@ struct EditorWebView: NSViewRepresentable {
         }
 
         func requestSave() {
-            eval("window.__jiba && window.__jiba.save()")
+            // comma-expression: save() is async and returns a Promise the
+            // evaluator can't serialize (noise error otherwise)
+            eval("window.__jiba && (window.__jiba.save(), undefined)")
         }
 
         func requestPresent() {
@@ -97,8 +109,15 @@ struct EditorWebView: NSViewRepresentable {
             eval("window.__jiba && window.__jiba.present(false)")
         }
 
+        func dbg(_ s: String) {
+            FileHandle.standardError.write(Data("[jiba] \(s)\n".utf8))
+        }
+
         private func handle(_ message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+            guard let body = message.body as? [String: Any], let type = body["type"] as? String else {
+                dbg("bad message: \(message.body)")
+                return
+            }
             switch type {
             case "ready":
                 break
@@ -106,6 +125,7 @@ struct EditorWebView: NSViewRepresentable {
                 let tag = body["tag"] as? String
                 let label = body["label"] as? String
                 let anim = body["anim"] as? String ?? ""
+                let trigger = body["animTrigger"] as? String ?? "load"
                 var snap = StyleSnapshot()
                 snap.hasSelection = tag != nil
                 snap.fontSize = body["fontSize"] as? String ?? "16"
@@ -118,7 +138,7 @@ struct EditorWebView: NSViewRepresentable {
                 snap.opacity = body["opacity"] as? String ?? "1"
                 snap.borderRadius = body["borderRadius"] as? String ?? "0"
                 Task { @MainActor in
-                    store.onSelectionChanged(tag: tag, label: label, style: snap, anim: anim)
+                    store.onSelectionChanged(tag: tag, label: label, style: snap, anim: anim, trigger: trigger)
                 }
             case "dirty":
                 Task { @MainActor in store.onDirty() }
@@ -126,7 +146,15 @@ struct EditorWebView: NSViewRepresentable {
                 let active = body["active"] as? Bool ?? false
                 let idx = body["index"] as? Int ?? 0
                 let cnt = body["count"] as? Int ?? 0
-                Task { @MainActor in store.onPPT(active: active, index: idx, count: cnt) }
+                var slides: [SlideInfo] = []
+                if let arr = body["slides"] as? [[String: Any]] {
+                    for s in arr {
+                        slides.append(SlideInfo(index: s["i"] as? Int ?? 0, label: s["label"] as? String ?? ""))
+                    }
+                } else {
+                    dbg("slides cast failed: \(Swift.type(of: body["slides"] ?? "nil"))")
+                }
+                Task { @MainActor in store.onPPT(active: active, index: idx, count: cnt, slides: slides) }
             case "toast":
                 let msg = body["msg"] as? String ?? ""
                 Task { @MainActor in store.showToast(msg) }
@@ -136,6 +164,7 @@ struct EditorWebView: NSViewRepresentable {
                 Task { @MainActor in
                     store.dirty = !ok ? store.dirty : false
                     store.showToast(msg, icon: ok ? "✓" : "⚠")
+                    store.onSaved(ok: ok)
                 }
             case "muted":
                 break
@@ -145,13 +174,19 @@ struct EditorWebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            dbg("didFail \(error.localizedDescription)")
             Task { @MainActor in store.showToast("页面加载失败: \(error.localizedDescription)", icon: "⚠") }
         }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            dbg("didFailProvisional \(error.localizedDescription)")
             Task { @MainActor in store.showToast("页面打开失败: \(error.localizedDescription)", icon: "⚠") }
+        }
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            dbg("didCommit")
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            dbg("didFinish")
             if let path = store.currentPage?.path {
                 let esc = path
                     .replacingOccurrences(of: "\\", with: "\\\\")
@@ -173,8 +208,7 @@ struct EditorWebView: NSViewRepresentable {
         (function(){
           if(window.__jiba) return;
           const post=(o)=>{ try{ window.webkit.messageHandlers.jiba.postMessage(o);}catch(e){} };
-          const $=id=>document.getElementById(id);
-          let selected=null, editing=false, undoStack=[], redoStack=[], savedSnap=null;
+          let selected=null, presentMode=false, editing=false, undoStack=[], redoStack=[], savedSnap=null, insertCount=0;
           const MAX=60;
 
           function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -203,6 +237,44 @@ struct EditorWebView: NSViewRepresentable {
             return st;
           }
 
+          // Persistent runtime for trigger-based animations (click/hover/scroll).
+          // Injected into the saved file so triggers keep working outside the editor.
+          function ensureAnimRuntime(){
+            ensureAnimLib();
+            if(document.getElementById('jiba-anim-runtime')) return;
+            const s=document.createElement('script'); s.id='jiba-anim-runtime';
+            s.textContent=`(function(){
+              if(window.__jibaAnimRuntime) return; window.__jibaAnimRuntime=true;
+              function cfg(el){ try{return JSON.parse(el.getAttribute('data-jiba-anim')||'null')}catch(e){return null} }
+              function play(el){
+                const c=cfg(el); if(!c) return;
+                el.style.animation='none'; void el.offsetWidth;
+                el.style.animationName=c.name;
+                el.style.animationDuration=(c.dur||0.6)+'s';
+                el.style.animationDelay=(c.delay||0)+'s';
+                el.style.animationTimingFunction=c.ease||'ease';
+                el.style.animationIterationCount=(c.iter===0?'infinite':String(c.iter||1));
+                el.style.animationFillMode='both';
+              }
+              window.__jibaPlay=play;
+              function arm(el){
+                const c=cfg(el); if(!c||el.hasAttribute('data-jiba-armed')) return;
+                el.setAttribute('data-jiba-armed','1');
+                if(c.t==='click'){ el.addEventListener('click',()=>play(el)); el.style.cursor='pointer'; }
+                else if(c.t==='hover'){ el.addEventListener('mouseenter',()=>play(el)); }
+                else if(c.t==='scroll'){
+                  if(!('IntersectionObserver' in window)){ play(el); return; }
+                  const io=new IntersectionObserver(es=>{es.forEach(e=>{ if(e.isIntersecting){ play(el); io.unobserve(el);} })},{threshold:.35});
+                  io.observe(el);
+                }
+              }
+              window.__jibaAnimArm=arm;
+              function armAll(){ document.querySelectorAll('[data-jiba-anim]').forEach(arm); }
+              if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',armAll); else armAll();
+            })();`;
+            document.head.appendChild(s);
+          }
+
           function injectStyles(){
             if(document.getElementById('jiba-styles')) return;
             const st=document.createElement('style'); st.id='jiba-styles';
@@ -219,9 +291,18 @@ struct EditorWebView: NSViewRepresentable {
           }
 
           function strip(root){
-            root.querySelectorAll('#jiba-styles,.j-handle,.j-selected,.j-hover,#v4-anim-lib').forEach(x=>{ if(x.id!=='v4-anim-lib') x.remove(); });
+            // Remove ONLY nodes this editor injected. Editor marker CLASSES on user
+            // elements must be un-classed, never removed — v4.2 deleted the element
+            // under the mouse (.j-hover) from every save.
+            root.querySelectorAll('#jiba-styles,.j-handle').forEach(x=>x.remove());
             root.querySelectorAll('.j-selected,.j-hover').forEach(x=>x.classList.remove('j-selected','j-hover'));
             root.querySelectorAll('[contenteditable="true"]').forEach(x=>x.removeAttribute('contenteditable'));
+            root.querySelectorAll('[data-jiba-armed]').forEach(x=>x.removeAttribute('data-jiba-armed'));
+            root.querySelectorAll('[data-j-was-static]').forEach(x=>{
+              x.style.removeProperty('position');
+              x.removeAttribute('data-j-was-static');
+            });
+            root.querySelectorAll('base[href^="/api/live/"]').forEach(x=>x.remove());
             root.querySelectorAll('[data-v4-ppt]').forEach(s=>{
               const o=s.getAttribute('data-v4-orig-opacity'); const pe=s.getAttribute('data-v4-orig-pe');
               s.style.removeProperty('opacity'); s.style.removeProperty('pointer-events'); s.style.removeProperty('transition');
@@ -229,6 +310,7 @@ struct EditorWebView: NSViewRepresentable {
               s.removeAttribute('data-v4-ppt'); s.removeAttribute('data-v4-orig-opacity'); s.removeAttribute('data-v4-orig-pe');
             });
             root.querySelectorAll('[class=""]').forEach(x=>x.removeAttribute('class'));
+            root.querySelectorAll('[style=""]').forEach(x=>x.removeAttribute('style'));
           }
 
           function snapshot(){
@@ -242,7 +324,14 @@ struct EditorWebView: NSViewRepresentable {
           function undo(){ if(!undoStack.length){ post({type:'toast',msg:'没有可撤销的操作'}); return;} const cur=snapshot(); if(cur) redoStack.push(cur); restore(undoStack.pop()); post({type:'dirty'}); }
           function redo(){ if(!redoStack.length){ post({type:'toast',msg:'没有可重做的操作'}); return;} const cur=snapshot(); if(cur){ undoStack.push(cur); if(undoStack.length>MAX) undoStack.shift(); } restore(redoStack.pop()); post({type:'dirty'}); }
 
-          function removeHandles(){ document.querySelectorAll('.j-handle').forEach(h=>h.remove()); }
+          function removeHandles(){
+            document.querySelectorAll('.j-handle').forEach(h=>h.remove());
+            // undo the position upgrade placeHandles made on static elements
+            document.querySelectorAll('[data-j-was-static]').forEach(x=>{
+              x.style.removeProperty('position');
+              x.removeAttribute('data-j-was-static');
+            });
+          }
           function placeHandles(el){
             removeHandles(); if(!el||el.nodeType!==1) return;
             const cs=getComputedStyle(el);
@@ -271,9 +360,16 @@ struct EditorWebView: NSViewRepresentable {
             document.addEventListener('mousemove',mm,true); document.addEventListener('mouseup',mu,true);
           }
 
+          function animOf(el){
+            const cfg=(()=>{ try{return JSON.parse(el.getAttribute('data-jiba-anim')||'null')}catch(e){return null} })();
+            return { name: el.getAttribute('data-v4-anim')||el.style.animationName||'',
+                     trigger: cfg?cfg.t:(el.getAttribute('data-v4-trigger')||'load') };
+          }
+
           function emitSelection(){
             if(!selected){ post({type:'selection', tag:null}); return; }
             const cs=getComputedStyle(selected);
+            const a=animOf(selected);
             post({
               type:'selection',
               tag:selected.tagName.toLowerCase(),
@@ -287,7 +383,7 @@ struct EditorWebView: NSViewRepresentable {
               height:String(Math.round(selected.offsetHeight)),
               opacity:String(Number.isFinite(parseFloat(cs.opacity))?parseFloat(cs.opacity):1),
               borderRadius:String(Math.round(parseFloat(cs.borderRadius)||0)),
-              anim:selected.style.animationName||selected.getAttribute('data-v4-anim')||''
+              anim:a.name, animTrigger:a.trigger
             });
           }
 
@@ -329,19 +425,21 @@ struct EditorWebView: NSViewRepresentable {
             }, true);
             document.addEventListener('mouseout', ()=>{ if(lastHover){ lastHover.classList.remove('j-hover'); lastHover=null; } }, true);
             document.addEventListener('click', e=>{
-              if(editing) return;
+              // in present mode let clicks pass through to trigger animations
+              if(editing||presentMode) return;
               const el=e.target; if(!el||el.nodeType!==1||el.hasAttribute('data-v4')) return;
               if(el.classList.contains('j-handle')) return;
               e.preventDefault(); e.stopPropagation();
               select(el);
             }, true);
             document.addEventListener('dblclick', e=>{
+              if(presentMode) return;
               const el=e.target; if(!el||el.nodeType!==1) return;
               if(['HTML','BODY','HEAD','IMG','IFRAME','VIDEO'].includes(el.tagName)) return;
               e.preventDefault(); e.stopPropagation(); startEdit(el);
             }, true);
             document.addEventListener('mousedown', e=>{
-              if(editing||e.button!==0) return;
+              if(editing||presentMode||e.button!==0) return;
               const el=e.target; if(!el||el.nodeType!==1||el.classList.contains('j-handle')) return;
               if(el===selected){
                 const cs=getComputedStyle(el);
@@ -366,11 +464,10 @@ struct EditorWebView: NSViewRepresentable {
             }, true);
           }
 
-          function detectPPT(){
-            // Only treat as deck when slides are large fixed/absolute layers.
-            // Aggressive `.slide` matching used to hide document sections → blank/black canvas.
+          // MARK: PPT deck detection & navigation
+
+          function deckCandidates(){
             const cands=['.deck > section','.slide','[data-slide]','.slide-item','section.slide'];
-            let found=[];
             for(const c of cands){
               const arr=Array.from(document.querySelectorAll(c));
               const ok=arr.filter(el=>{
@@ -379,8 +476,21 @@ struct EditorWebView: NSViewRepresentable {
                 const positioned = st.position==='absolute'||st.position==='fixed';
                 return positioned && h>=300 && w>=200;
               });
-              if(ok.length>=2){ found=ok; break; }
+              if(ok.length>=2) return ok;
             }
+            return [];
+          }
+
+          function slideLabel(s,i){
+            const h=s.querySelector('h1,h2,h3,[data-slide-title]');
+            const t=(h&&h.textContent?h.textContent:'').trim().replace(/\s+/g,' ').slice(0,24);
+            return t||('第 '+(i+1)+' 页');
+          }
+
+          function detectPPT(){
+            // Only treat as deck when slides are large fixed/absolute layers.
+            // Aggressive `.slide` matching used to hide document sections → blank/black canvas.
+            const found=deckCandidates();
             if(found.length>=2){
               found.forEach((s,i)=>{
                 if(!s.hasAttribute('data-v4-ppt')){
@@ -392,30 +502,62 @@ struct EditorWebView: NSViewRepresentable {
                 if(i!==0){ s.style.setProperty('opacity','0','important'); s.style.setProperty('pointer-events','none','important'); }
                 else { s.style.setProperty('opacity','1','important'); s.style.setProperty('pointer-events','auto','important'); }
               });
-              post({type:'ppt', active:true, index:0, count:found.length});
+              postPPT(0, found);
             } else {
-              post({type:'ppt', active:false, index:0, count:0});
+              post({type:'ppt', active:false, index:0, count:0, slides:[]});
             }
           }
 
+          function postPPT(idx, slides){
+            post({type:'ppt', active:true, index:idx, count:slides.length,
+                  slides:slides.map((s,i)=>({i, label:slideLabel(s,i)}))});
+          }
+
           function pptSlides(){ return Array.from(document.querySelectorAll('[data-v4-ppt]')); }
-          function pptNav(d){
-            const slides=pptSlides(); if(!slides.length) return;
+          function pptCur(){
+            const slides=pptSlides();
             let cur=slides.findIndex(s=>s.style.opacity==='1');
             if(cur<0) cur=0;
-            const n=cur+d; if(n<0||n>=slides.length) return;
-            slides.forEach((s,i)=>{
-              if(i!==n){ s.style.setProperty('opacity','0','important'); s.style.setProperty('pointer-events','none','important'); }
+            return cur;
+          }
+          function pptGo(i){
+            const slides=pptSlides(); if(!slides.length) return;
+            const n=Math.max(0,Math.min(slides.length-1,i));
+            slides.forEach((s,idx)=>{
+              if(idx!==n){ s.style.setProperty('opacity','0','important'); s.style.setProperty('pointer-events','none','important'); }
               else { s.style.setProperty('opacity','1','important'); s.style.setProperty('pointer-events','auto','important'); }
             });
-            post({type:'ppt', active:true, index:n, count:slides.length});
+            postPPT(n, slides);
           }
+          function pptNav(d){ pptGo(pptCur()+d); }
 
           function serializeFull(){
             const clone=document.documentElement.cloneNode(true);
             strip(clone);
-            // keep anim lib if present
-            return '<!DOCTYPE html>\\n'+clone.outerHTML;
+            // keep anim lib + runtime if present (they carry user animations)
+            return '<!DOCTYPE html>\n'+clone.outerHTML;
+          }
+
+          // MARK: insertion — new elements land in the CURRENT slide when a deck is open
+
+          function insertTarget(){
+            const slides=pptSlides();
+            if(slides.length){ return slides[Math.min(pptCur(),slides.length-1)]; }
+            return document.body;
+          }
+          function placeIn(el){
+            const host=insertTarget();
+            const onSlide=host!==document.body;
+            insertCount++;
+            if(onSlide){
+              const off=(insertCount%6);
+              el.style.position='absolute';
+              el.style.left=(32+off*26)+'px';
+              el.style.top=(28+off*22)+'px';
+              el.style.zIndex=50;
+            }
+            host.appendChild(el);
+            return el;
           }
 
           window.__jiba={
@@ -431,25 +573,41 @@ struct EditorWebView: NSViewRepresentable {
               }
               post({type:'dirty'}); emitSelection();
             },
-            applyAnim(name,dur,delay,ease,iter){
+            applyAnim(name,dur,delay,ease,iter,trigger){
               if(!selected) return; pushUndo(); ensureAnimLib();
-              selected.style.setProperty('animation-name', name);
-              selected.style.setProperty('animation-duration', dur+'s');
-              selected.style.setProperty('animation-delay', delay+'s');
-              selected.style.setProperty('animation-timing-function', ease||'ease');
-              selected.style.setProperty('animation-iteration-count', iter===0?'infinite':String(iter||1));
-              selected.style.setProperty('animation-fill-mode','both');
+              const t=trigger||'load';
+              ['animation-name','animation-duration','animation-delay','animation-timing-function','animation-iteration-count','animation-fill-mode','animation'].forEach(p=>selected.style.removeProperty(p));
+              selected.removeAttribute('data-jiba-anim');
+              if(t==='load'){
+                selected.style.setProperty('animation-name', name);
+                selected.style.setProperty('animation-duration', dur+'s');
+                selected.style.setProperty('animation-delay', delay+'s');
+                selected.style.setProperty('animation-timing-function', ease||'ease');
+                selected.style.setProperty('animation-iteration-count', iter===0?'infinite':String(iter||1));
+                selected.style.setProperty('animation-fill-mode','both');
+              } else {
+                selected.setAttribute('data-jiba-anim', JSON.stringify({name,dur,delay,ease,iter,t}));
+                ensureAnimRuntime();
+                if(window.__jibaAnimArm) window.__jibaAnimArm(selected);
+              }
               selected.setAttribute('data-v4-anim', name);
+              selected.setAttribute('data-v4-trigger', t);
               post({type:'dirty'}); emitSelection();
             },
             clearAnim(){
               if(!selected) return; pushUndo();
               ['animation-name','animation-duration','animation-delay','animation-timing-function','animation-iteration-count','animation-fill-mode','animation'].forEach(p=>selected.style.removeProperty(p));
+              selected.removeAttribute('data-jiba-anim');
               selected.removeAttribute('data-v4-anim');
+              selected.removeAttribute('data-v4-trigger');
+              if(!document.querySelector('[data-jiba-anim]')){
+                const rt=document.getElementById('jiba-anim-runtime'); if(rt) rt.remove();
+              }
               post({type:'dirty'}); emitSelection();
             },
             previewAnim(){
               if(!selected) return;
+              if(window.__jibaPlay && selected.hasAttribute('data-jiba-anim')){ window.__jibaPlay(selected); return; }
               selected.style.animation='none'; void selected.offsetWidth; selected.style.animation='';
             },
             align(mode){
@@ -498,18 +656,17 @@ struct EditorWebView: NSViewRepresentable {
               svg.classList.add('j-shape'); svg.style.display='inline-block';
               const g=document.createElementNS('http://www.w3.org/2000/svg','g');
               g.setAttribute('fill','#ff9900'); g.innerHTML=s[1]; svg.appendChild(g);
-              (document.body).appendChild(svg);
-              select(svg); post({type:'dirty'});
+              placeIn(svg); select(svg); post({type:'dirty'});
             },
             insertNode(kind){
               pushUndo(); let el=null;
-              if(kind==='textbox'){ el=document.createElement('div'); el.textContent='双击编辑文字'; el.style.cssText='padding:12px 16px;font-size:16px;min-width:120px'; }
-              if(kind==='title'){ el=document.createElement('h2'); el.textContent='新标题'; el.style.cssText='font-size:28px;font-weight:800;margin:12px 0'; }
-              if(kind==='button'){ el=document.createElement('a'); el.href='javascript:void(0)'; el.textContent='点击这里'; el.style.cssText='display:inline-block;padding:10px 22px;background:#002060;color:#fff;border-radius:8px;font-weight:600;text-decoration:none'; }
-              if(kind==='divider'){ el=document.createElement('hr'); el.style.cssText='border:none;border-top:2px solid #e2e6ec;margin:20px 0'; }
-              if(kind==='card'){ el=document.createElement('div'); el.innerHTML='<div style="font-weight:700;margin-bottom:6px">卡片标题</div><div style="color:#5f6b7a">描述文字</div>'; el.style.cssText='background:#fff;border:1px solid #e2e6ec;border-radius:12px;padding:16px;max-width:320px'; }
-              if(kind==='icon'){ el=document.createElement('div'); el.textContent='⭐'; el.style.cssText='font-size:48px'; }
-              if(el){ document.body.appendChild(el); select(el); post({type:'dirty'}); }
+              if(kind==='textbox'){ el=document.createElement('div'); el.textContent='双击编辑文字'; el.style.cssText='padding:12px 16px;font-size:16px;min-width:120px;background:rgba(255,255,255,.9)'; }
+              if(kind==='title'){ el=document.createElement('h2'); el.textContent='新标题'; el.style.cssText='font-size:28px;font-weight:800;margin:0'; }
+              if(kind==='button'){ el=document.createElement('a'); el.href='javascript:void(0)'; el.textContent='点击这里'; el.style.cssText='display:inline-block;padding:10px 22px;background:#ff9900;color:#0f1115;border-radius:8px;font-weight:600;text-decoration:none'; }
+              if(kind==='divider'){ el=document.createElement('hr'); el.style.cssText='border:none;border-top:2px solid #e2e6ec;margin:0;width:60%'; }
+              if(kind==='card'){ el=document.createElement('div'); el.innerHTML='<div style="font-weight:700;margin-bottom:6px">卡片标题</div><div style="color:#5f6b7a">描述文字</div>'; el.style.cssText='background:#fff;border:1px solid #e2e6ec;border-radius:12px;padding:16px;max-width:320px;box-shadow:0 4px 16px rgba(0,0,0,.08)'; }
+              if(kind==='icon'){ el=document.createElement('div'); el.textContent='⭐'; el.style.cssText='font-size:48px;line-height:1'; }
+              if(el){ placeIn(el); select(el); post({type:'dirty'}); }
             },
             insertTable(rows,cols){
               pushUndo();
@@ -517,20 +674,40 @@ struct EditorWebView: NSViewRepresentable {
               for(let r=0;r<rows;r++){ const tr=document.createElement('tr');
                 for(let c=0;c<cols;c++){ const cell=document.createElement(r===0?'th':'td');
                   cell.textContent=r===0?('表头'+(c+1)):' '; cell.style.border='1px solid #94a3b8'; cell.style.padding='8px 12px';
-                  if(r===0){ cell.style.background='#ff9900'; cell.style.color='#fff'; }
+                  if(r===0){ cell.style.background='#ff9900'; cell.style.color='#0f1115'; }
                   tr.appendChild(cell); }
                 t.appendChild(tr); }
-              document.body.appendChild(t); select(t); post({type:'dirty'});
+              placeIn(t); select(t); post({type:'dirty'});
             },
             insertImage(url){
               pushUndo();
               const img=document.createElement('img'); img.src=url; img.alt='图片'; img.style.maxWidth='240px';
-              document.body.appendChild(img); select(img); post({type:'dirty'});
+              placeIn(img); select(img); post({type:'dirty'});
             },
-            undo, redo, pptNav,
-            pptDup(){ /* simplified */ },
-            pptDel(){ /* simplified */ },
-            setZoom(z){ document.documentElement.style.zoom=z; },
+            undo, redo, pptNav, pptGo,
+            pptDup(){
+              const slides=pptSlides();
+              if(!slides.length){ post({type:'toast',msg:'未检测到幻灯片结构'}); return; }
+              pushUndo();
+              const cur=pptCur();
+              const c=slides[cur].cloneNode(true);
+              c.querySelectorAll('.j-handle').forEach(h=>h.remove());
+              c.classList.remove('j-selected');
+              c.removeAttribute('data-v4-ppt'); c.removeAttribute('data-v4-orig-opacity'); c.removeAttribute('data-v4-orig-pe');
+              slides[cur].parentNode.insertBefore(c, slides[cur].nextSibling);
+              detectPPT(); pptGo(cur+1);
+              post({type:'dirty'});
+            },
+            pptDel(){
+              const slides=pptSlides();
+              if(!slides.length){ post({type:'toast',msg:'未检测到幻灯片结构'}); return; }
+              if(slides.length<=1){ post({type:'toast',msg:'至少保留一页'}); return; }
+              pushUndo();
+              const cur=pptCur();
+              slides[cur].remove();
+              detectPPT(); pptGo(Math.min(cur, slides.length-2));
+              post({type:'dirty'});
+            },
             setDevice(w,h){ /* frame size handled by Swift */ },
             export(){
               const html=serializeFull();
@@ -548,13 +725,19 @@ struct EditorWebView: NSViewRepresentable {
               const c=window.__jibaClip.cloneNode(true);
               c.querySelectorAll('.j-handle').forEach(h=>h.remove());
               c.classList.remove('j-selected');
-              (selected&&selected.parentNode?selected.parentNode:document.body).appendChild(c);
-              select(c); post({type:'dirty'});
+              placeIn(c); select(c); post({type:'dirty'});
             },
             bringForward(){ if(!selected||!selected.nextElementSibling) return; pushUndo(); selected.parentNode.insertBefore(selected.nextElementSibling, selected); post({type:'dirty'}); },
             sendBackward(){ if(!selected||!selected.previousElementSibling) return; pushUndo(); selected.parentNode.insertBefore(selected, selected.previousElementSibling); post({type:'dirty'}); },
             bringToFront(){ if(!selected||!selected.parentNode) return; pushUndo(); selected.parentNode.appendChild(selected); post({type:'dirty'}); },
             sendToBack(){ if(!selected||!selected.parentNode) return; pushUndo(); selected.parentNode.insertBefore(selected, selected.parentNode.firstChild); post({type:'dirty'}); },
+            toggleBold(){
+              if(!selected) return; pushUndo();
+              const cs=getComputedStyle(selected);
+              const w=parseInt(cs.fontWeight)||400;
+              selected.style.fontWeight = w>=600 ? '400' : '700';
+              post({type:'dirty'}); emitSelection();
+            },
             toggleItalic(){
               if(!selected) return; pushUndo();
               const cs=getComputedStyle(selected);
@@ -575,9 +758,9 @@ struct EditorWebView: NSViewRepresentable {
               g.appendChild(selected);
               select(g); post({type:'dirty'});
             },
-            selectAll(){ /* host-side conceptually; select body */ select(document.body); },
+            selectAll(){ select(document.body); },
             present(on){
-              document.documentElement.classList.toggle('j-presenting', !!on);
+              presentMode=!!on;
               if(on){ deselect(); document.querySelectorAll('.j-handle').forEach(h=>h.remove()); }
             },
             async save(){

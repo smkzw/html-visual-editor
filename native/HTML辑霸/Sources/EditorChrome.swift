@@ -1,6 +1,8 @@
 import SwiftUI
+import AppKit
 
-/// Main editor chrome: glass toolbar + sidebar + canvas + inspector
+/// Main editor chrome: glass toolbar + sidebar + canvas + inspector.
+/// Presenting hides the chrome and gives the canvas the full window.
 struct EditorChromeView: View {
     @EnvironmentObject var store: EditorStore
     @State private var sidebarCollapsed = false
@@ -8,20 +10,25 @@ struct EditorChromeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            GlassToolbar(sidebarCollapsed: $sidebarCollapsed, inspectorTab: $inspectorTab)
+            if !store.presenting {
+                GlassToolbar(sidebarCollapsed: $sidebarCollapsed, inspectorTab: $inspectorTab)
+            }
             HStack(spacing: 0) {
-                if !sidebarCollapsed {
+                if !sidebarCollapsed && !store.presenting {
                     SidebarPanel()
                         .frame(width: 220)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
-                CanvasArea()
+                CanvasArea(presenting: store.presenting)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                InspectorPanel(tab: $inspectorTab)
-                    .frame(width: 280)
+                if !store.presenting {
+                    InspectorPanel(tab: $inspectorTab)
+                        .frame(width: 280)
+                }
             }
         }
         .animation(.smooth(duration: 0.22), value: sidebarCollapsed)
+        .animation(.smooth(duration: 0.25), value: store.presenting)
     }
 }
 
@@ -31,10 +38,10 @@ struct GlassToolbar: View {
     @EnvironmentObject var store: EditorStore
     @Binding var sidebarCollapsed: Bool
     @Binding var inspectorTab: Int
-    @State private var showInsert = false
     @State private var imageURL = ""
+    @State private var showInsert = false
     @State private var fontSize = "16"
-    @State private var textColor = "#1f242b"
+    @State private var textColor = "#0f1115"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -50,7 +57,7 @@ struct GlassToolbar: View {
                         Text(store.project?.name ?? "").foregroundStyle(Theme.inkSecondary)
                         Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.inkTertiary)
                         Text(name).foregroundStyle(Theme.accentDeep)
-                        if store.dirty { Circle().fill(.blue).frame(width: 6, height: 6) }
+                        if store.dirty { Circle().fill(Theme.accent).frame(width: 6, height: 6) }
                         if store.isPPT {
                             Text("幻灯片 \(store.pptIndex+1)/\(store.pptCount)")
                                 .font(.caption.weight(.bold))
@@ -95,7 +102,7 @@ struct GlassToolbar: View {
                     RibbonSep()
                     RibbonGroup(title: "字体") {
                         HStack(spacing: 4) {
-                            RibbonBtn("B", nil, bold: true) { store.setFontWeight("700") }
+                            RibbonBtn("B", nil, bold: true) { store.toggleBold() }
                             RibbonBtn("I", nil) { store.toggleItalic() }
                             RibbonBtn("U", nil) { store.toggleUnderline() }
                         }
@@ -116,9 +123,9 @@ struct GlassToolbar: View {
                     }
                     RibbonSep()
                     RibbonGroup(title: "段落") {
-                        RibbonBtn("左", "align.horizontal.left") { store.align("left") }
-                        RibbonBtn("中", "align.horizontal.center") { store.align("center") }
-                        RibbonBtn("右", "align.horizontal.right") { store.align("right") }
+                        RibbonBtn("左", "align.horizontal.left") { store.setTextAlign("left") }
+                        RibbonBtn("中", "align.horizontal.center") { store.setTextAlign("center") }
+                        RibbonBtn("右", "align.horizontal.right") { store.setTextAlign("right") }
                     }
                     RibbonSep()
                     RibbonGroup(title: "插入") {
@@ -128,6 +135,9 @@ struct GlassToolbar: View {
                             }
                         } label: { RibbonLabel("形状", "square.on.circle") }
                         Menu {
+                            Button("本地图片…") { store.pickLocalImage() }
+                            Button("图片 URL…") { showInsert = true }
+                            Divider()
                             Button("文字框") { store.insertNode("textbox") }
                             Button("标题") { store.insertNode("title") }
                             Button("按钮") { store.insertNode("button") }
@@ -135,8 +145,6 @@ struct GlassToolbar: View {
                             Button("卡片") { store.insertNode("card") }
                             Button("图标") { store.insertNode("icon") }
                             Button("表格") { store.insertTable() }
-                            Divider()
-                            Button("图片 URL…") { showInsert = true }
                         } label: { RibbonLabel("插入", "plus") }
                     }
                     RibbonSep()
@@ -179,7 +187,7 @@ struct GlassToolbar: View {
             }
         }
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.ink.opacity(0.08)).frame(height: 0.5) }
-        .alert("插入图片", isPresented: $showInsert) {
+        .alert("插入图片 URL", isPresented: $showInsert) {
             TextField("图片 URL", text: $imageURL)
             Button("插入") { if !imageURL.isEmpty { store.insertImage(url: imageURL); imageURL = "" } }
             Button("取消", role: .cancel) {}
@@ -288,9 +296,6 @@ extension Color {
         }
     }
     func toHexString() -> String {
-        #if canImport(UIKit)
-        // not used
-        #endif
         let ns = NSColor(self).usingColorSpace(.sRGB) ?? .black
         return String(format: "#%02X%02X%02X",
                       Int(ns.redComponent * 255), Int(ns.greenComponent * 255), Int(ns.blueComponent * 255))
@@ -303,18 +308,56 @@ struct SidebarPanel: View {
     @EnvironmentObject var store: EditorStore
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(store.isPPT ? "幻灯片 · \(store.pptCount) 页" : "项目文件")
-                    .font(.system(size: 11, weight: .bold))
-                    .kerning(0.8)
-                    .foregroundStyle(Theme.inkTertiary)
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-
             ScrollView {
-                LazyVStack(spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if store.isPPT && !store.slides.isEmpty {
+                        Text("幻灯片 · \(store.slides.count) 页")
+                            .font(.system(size: 11, weight: .bold))
+                            .kerning(0.8)
+                            .foregroundStyle(Theme.inkTertiary)
+                            .padding(.horizontal, 10)
+                            .padding(.top, 10)
+                            .padding(.bottom, 6)
+                        ForEach(store.slides) { slide in
+                            Button {
+                                store.pptGo(slide.index)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text("\(slide.index + 1)")
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 18, height: 18)
+                                        .background(
+                            store.pptIndex == slide.index ? Theme.solidAccent : Theme.ink.opacity(0.18),
+                                            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                        )
+                                    Text(slide.label)
+                                        .lineLimit(1)
+                                        .foregroundStyle(store.pptIndex == slide.index ? Theme.accentDeep : Theme.ink)
+                                    Spacer()
+                                }
+                                .font(.system(size: 12, weight: .medium))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    store.pptIndex == slide.index
+                                        ? Theme.accent.opacity(0.16)
+                                        : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    Text(store.isPPT ? "项目文件" : "项目文件 · \(store.pages.count)")
+                        .font(.system(size: 11, weight: .bold))
+                        .kerning(0.8)
+                        .foregroundStyle(Theme.inkTertiary)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 10)
+                        .padding(.bottom, 6)
+
                     ForEach(store.pages) { page in
                         Button {
                             store.loadPage(page)
@@ -322,7 +365,7 @@ struct SidebarPanel: View {
                             HStack(spacing: 8) {
                                 Image(systemName: page.ext == ".html" ? "doc.text" : "doc")
                                     .foregroundStyle(Theme.accentDeep)
-                                Text(page.name)
+                                Text(page.rel)
                                     .lineLimit(1)
                                     .foregroundStyle(store.currentPage?.path == page.path ? Theme.accentDeep : Theme.ink)
                                 Spacer()
@@ -355,19 +398,43 @@ struct SidebarPanel: View {
 
 struct CanvasArea: View {
     @EnvironmentObject var store: EditorStore
+    var presenting = false
 
     var body: some View {
-        ZStack {
-            // Soft liquid-glass desk surface (not flat gray)
-            LinearGradient(
-                colors: [Color(red: 0.94, green: 0.95, blue: 0.97),
-                         Color(red: 0.90, green: 0.91, blue: 0.94)],
-                startPoint: .top, endPoint: .bottom
-            )
-            RadialGradient(colors: [Theme.accent.opacity(0.08), .clear],
-                           center: .topLeading, startRadius: 0, endRadius: 400)
+        GeometryReader { geo in
+            let fit = min(1.25, max(0.15, min(
+                (geo.size.width - 48) / max(store.deviceW, 1),
+                (geo.size.height - 56) / max(store.deviceH, 1))))
+            // Present: cover the whole stage. Edit: fit × user zoom (scrollable when larger).
+            // NOTE: the view structure below must NOT depend on `presenting` —
+            // branching would rebuild the WKWebView and reload (losing edits).
+            let scale = presenting
+                ? min(2.0, max(geo.size.width / max(store.deviceW, 1), geo.size.height / max(store.deviceH, 1)))
+                : fit * store.zoom
+            let visW = store.deviceW * scale
+            let visH = store.deviceH * scale
 
-            if store.currentPage == nil {
+            ScrollView([.horizontal, .vertical]) {
+                canvas(scale: scale, visW: presenting ? max(visW, geo.size.width) : visW,
+                       visH: presenting ? max(visH, geo.size.height) : visH)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(presenting ? 0 : 24)
+            }
+            .defaultScrollAnchor(.center)
+            .scrollDisabled(presenting)
+            .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .background {
+            if presenting { Color.black } else { CanvasDesk() }
+        }
+        .overlay {
+            if presenting { PresentControls() }
+        }
+        .overlay(alignment: .bottom) {
+            if !presenting && store.currentPage != nil { ZoomHud() }
+        }
+        .overlay {
+            if !presenting && store.currentPage == nil {
                 VStack(spacing: 12) {
                     Image(systemName: "doc.richtext")
                         .font(.system(size: 42))
@@ -379,57 +446,70 @@ struct CanvasArea: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.inkTertiary)
                 }
-            } else {
-                GeometryReader { geo in
-                    let scale = min(1.25, max(0.25, (geo.size.width - 48) / max(store.deviceW, 1)))
-                    let visW = store.deviceW * scale
-                    let visH = store.deviceH * scale
-                    ZStack {
-                        // Outer frame = VISUAL size only, so scaled webview cannot cover toolbar
-                        EditorWebView(store: store)
-                            .frame(width: store.deviceW, height: store.deviceH)
-                            .scaleEffect(scale, anchor: .center)
-                            .frame(width: visW, height: visH)
-                            .clipped()
-                            .background(Color.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .strokeBorder(Theme.ink.opacity(0.14), lineWidth: 1)
-                            }
-                            .shadow(color: .black.opacity(0.18), radius: 24, y: 10)
-                    }
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .position(x: geo.size.width/2, y: geo.size.height/2)
-                    .allowsHitTesting(true)
-                }
-            }
-
-            VStack {
-                Spacer()
-                HStack(spacing: 10) {
-                    GlassChip {
-                        Button { store.setZoom(max(0.25, Double(store.zoom) - 0.1)) } label: {
-                            Image(systemName: "minus").foregroundStyle(Theme.ink)
-                        }
-                        Text("\(Int(store.zoom * 100))%")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Theme.ink)
-                            .frame(width: 40)
-                        Button { store.setZoom(min(2.5, Double(store.zoom) + 0.1)) } label: {
-                            Image(systemName: "plus").foregroundStyle(Theme.ink)
-                        }
-                        Divider().frame(height: 12)
-                        Button("桌面") { store.setDevice(w: 1280, h: 800) }.foregroundStyle(Theme.ink)
-                        Button("平板") { store.setDevice(w: 768, h: 1024) }.foregroundStyle(Theme.ink)
-                        Button("手机") { store.setDevice(w: 390, h: 844) }.foregroundStyle(Theme.ink)
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .padding(.bottom, 14)
             }
         }
+    }
+
+    private func canvas(scale: CGFloat, visW: CGFloat, visH: CGFloat) -> some View {
+        EditorWebView(store: store)
+            .frame(width: store.deviceW, height: store.deviceH)
+            .scaleEffect(scale, anchor: .center)
+            .frame(width: visW, height: visH)
+            .clipped()
+            .background(presenting ? Color.black : Color.white)
+            .clipShape(presenting ? AnyShape(Rectangle()) : AnyShape(RoundedRectangle(cornerRadius: 8, style: .continuous)))
+            .overlay {
+                if !presenting {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Theme.ink.opacity(0.14), lineWidth: 1)
+                }
+            }
+            .shadow(color: .black.opacity(presenting ? 0 : 0.18), radius: 24, y: 10)
+            .allowsHitTesting(true)
+    }
+}
+
+struct CanvasDesk: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.94, green: 0.95, blue: 0.97),
+                         Color(red: 0.90, green: 0.91, blue: 0.94)],
+                startPoint: .top, endPoint: .bottom
+            )
+            RadialGradient(colors: [Theme.accent.opacity(0.08), .clear],
+                           center: .topLeading, startRadius: 0, endRadius: 400)
+        }
+    }
+}
+
+// MARK: - Zoom HUD
+
+struct ZoomHud: View {
+    @EnvironmentObject var store: EditorStore
+    var body: some View {
+        HStack(spacing: 10) {
+            GlassChip {
+                Button { store.setZoom(Double(store.zoom) - 0.1) } label: {
+                    Image(systemName: "minus").foregroundStyle(Theme.ink)
+                }
+                Text("\(Int(store.zoom * 100))%")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.ink)
+                    .frame(width: 40)
+                Button { store.setZoom(Double(store.zoom) + 0.1) } label: {
+                    Image(systemName: "plus").foregroundStyle(Theme.ink)
+                }
+                Button("适应") { store.setZoom(1.0) }.foregroundStyle(Theme.ink)
+                Divider().frame(height: 12)
+                Button("桌面") { store.setDevice(w: 1280, h: 800) }.foregroundStyle(Theme.ink)
+                Button("平板") { store.setDevice(w: 768, h: 1024) }.foregroundStyle(Theme.ink)
+                Button("手机") { store.setDevice(w: 390, h: 844) }.foregroundStyle(Theme.ink)
+            }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 11, weight: .medium))
+        .padding(.bottom, 14)
     }
 }
 
@@ -443,6 +523,65 @@ struct GlassChip<Content: View>: View {
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.panelStroke, lineWidth: 0.6))
             .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
+    }
+}
+
+// MARK: - Present controls (over the canvas, not covering it)
+
+struct PresentControls: View {
+    @EnvironmentObject var store: EditorStore
+    @State private var monitor = PresentKeyMonitor()
+
+    var body: some View {
+        ZStack {
+            VStack {
+                Spacer()
+                HStack(spacing: 14) {
+                    Button { store.pptNav(-1) } label: { Image(systemName: "chevron.left") }
+                    Text(store.isPPT ? "\(store.pptIndex+1) / \(store.pptCount)" : "演示中")
+                        .font(.system(size: 13, design: .monospaced))
+                        .frame(minWidth: 56)
+                    Button { store.pptNav(1) } label: { Image(systemName: "chevron.right") }
+                    Divider().frame(height: 14)
+                    Button("退出 (Esc)") { store.exitPresent() }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.black.opacity(0.55), in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
+                .padding(.bottom, 22)
+            }
+        }
+        .onAppear {
+            monitor.start(
+                next: { Task { @MainActor in store.pptNav(1) } },
+                prev: { Task { @MainActor in store.pptNav(-1) } },
+                exit: { Task { @MainActor in store.exitPresent() } }
+            )
+        }
+        .onDisappear { monitor.stop() }
+    }
+}
+
+/// Arrow/space/Esc handling while presenting (WKWebView eats raw keys).
+final class PresentKeyMonitor {
+    private var id: Any?
+    func start(next: @escaping () -> Void, prev: @escaping () -> Void, exit: @escaping () -> Void) {
+        stop()
+        id = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            switch e.keyCode {
+            case 123, 33: prev(); return nil   // ← / PageUp
+            case 124, 34, 49: next(); return nil // → / PageDown / Space
+            case 53: exit(); return nil         // Esc
+            default: return e
+            }
+        }
+    }
+    func stop() {
+        if let id { NSEvent.removeMonitor(id) }
+        id = nil
     }
 }
 
@@ -497,6 +636,8 @@ struct TabBtn: View {
     }
 }
 
+// MARK: Style inspector — debounced commits (one undo step per settle, not per keystroke)
+
 struct StyleInspector: View {
     @EnvironmentObject var store: EditorStore
     @State private var fontSize = "16"
@@ -514,42 +655,36 @@ struct StyleInspector: View {
                     .background(Theme.accent.opacity(0.18), in: Capsule())
                     .foregroundStyle(Theme.accentDeep)
 
-                InspectorField(title: "字号", text: $fontSize)
-                    .onChange(of: fontSize) { _, v in store.applyStyle(["fontSize": v + "px"]) }
-                InspectorField(title: "颜色", text: $colorHex)
-                    .onChange(of: colorHex) { _, v in store.applyStyle(["color": v]) }
-                InspectorField(title: "背景", text: $bgHex)
-                    .onChange(of: bgHex) { _, v in store.applyStyle(["backgroundColor": v]) }
+                DebouncedStyleField(title: "字号", key: "fontSize", suffix: "px", text: $fontSize, sync: store.styleSnapshot.fontSize)
+                DebouncedStyleField(title: "颜色", key: "color", suffix: "", text: $colorHex, sync: store.styleSnapshot.color)
+                DebouncedStyleField(title: "背景", key: "backgroundColor", suffix: "", text: $bgHex, sync: store.styleSnapshot.background)
                 HStack(spacing: 8) {
-                    InspectorField(title: "宽", text: $width)
-                        .onChange(of: width) { _, v in store.applyStyle(["width": v + "px"]) }
-                    InspectorField(title: "高", text: $height)
-                        .onChange(of: height) { _, v in store.applyStyle(["height": v + "px"]) }
+                    DebouncedStyleField(title: "宽", key: "width", suffix: "px", text: $width, sync: store.styleSnapshot.width)
+                    DebouncedStyleField(title: "高", key: "height", suffix: "px", text: $height, sync: store.styleSnapshot.height)
                 }
                 HStack(spacing: 8) {
-                    GlassMiniBtn("粗体") { store.applyStyle(["fontWeight": "700"]) }
+                    GlassMiniBtn("加粗") { store.applyStyle(["fontWeight": "700"]) }
                     GlassMiniBtn("常规") { store.applyStyle(["fontWeight": "400"]) }
                     GlassMiniBtn("居中") { store.applyStyle(["textAlign": "center"]) }
+                }
+                SectionHeader("相对父级对齐")
+                HStack(spacing: 8) {
+                    GlassMiniBtn("左") { store.align("left") }
+                    GlassMiniBtn("水平居中") { store.align("center") }
+                    GlassMiniBtn("右") { store.align("right") }
+                }
+                HStack(spacing: 8) {
+                    GlassMiniBtn("顶") { store.align("top") }
+                    GlassMiniBtn("垂直居中") { store.align("middle") }
+                    GlassMiniBtn("底") { store.align("bottom") }
                 }
                 HStack(spacing: 8) {
                     GlassMiniBtn("复制") { store.duplicateSelected() }
                     GlassMiniBtn("删除", danger: true) { store.deleteSelected() }
                 }
             }
-            .onAppear {
-                fontSize = store.styleSnapshot.fontSize
-                colorHex = store.styleSnapshot.color
-                bgHex = store.styleSnapshot.background
-                width = store.styleSnapshot.width
-                height = store.styleSnapshot.height
-            }
-            .onChange(of: store.styleSnapshot) { _, snap in
-                fontSize = snap.fontSize
-                colorHex = snap.color
-                bgHex = snap.background
-                width = snap.width
-                height = snap.height
-            }
+            .onAppear { syncFields() }
+            .onChange(of: store.styleSnapshot) { _, _ in syncFields() }
         } else {
             VStack(spacing: 10) {
                 Image(systemName: "cursorarrow.click.2")
@@ -564,6 +699,43 @@ struct StyleInspector: View {
             .padding(.top, 40)
         }
     }
+
+    private func syncFields() {
+        fontSize = store.styleSnapshot.fontSize
+        colorHex = store.styleSnapshot.color == "transparent" ? bgHex : store.styleSnapshot.color
+        bgHex = store.styleSnapshot.background == "transparent" ? "transparent" : store.styleSnapshot.background
+        width = store.styleSnapshot.width
+        height = store.styleSnapshot.height
+    }
+}
+
+/// Text field that commits a style after typing settles (or on Enter).
+/// Skips commits triggered by programmatic sync from the selection snapshot.
+struct DebouncedStyleField: View {
+    @EnvironmentObject var store: EditorStore
+    let title: String
+    let key: String
+    let suffix: String
+    @Binding var text: String
+    let sync: String
+    @State private var task: Task<Void, Never>?
+
+    var body: some View {
+        InspectorField(title: title, text: $text)
+            .onChange(of: text) { _, v in
+                guard v != sync else { return } // echo from snapshot, not user typing
+                task?.cancel()
+                task = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 550_000_000)
+                    guard !Task.isCancelled else { return }
+                    store.applyStyle([key: v + suffix])
+                }
+            }
+            .onSubmit {
+                task?.cancel()
+                if text != sync { store.applyStyle([key: text + suffix]) }
+            }
+    }
 }
 
 struct AnimInspector: View {
@@ -572,14 +744,16 @@ struct AnimInspector: View {
     @State private var delay = "0"
     @State private var ease = "ease"
     @State private var iter = "1"
+    @State private var trigger = "load"
 
     let entrance = [
-        ("v4-fade-in","淡入"),("v4-slide-up","上滑"),("v4-slide-left","左滑"),
-        ("v4-zoom-in","放大"),("v4-bounce-in","弹入"),("v4-flip-in","翻转")
+        ("v4-fade-in","淡入"),("v4-slide-up","上滑"),("v4-slide-down","下滑"),("v4-slide-left","左滑"),
+        ("v4-slide-right","右滑"),("v4-zoom-in","放大"),("v4-bounce-in","弹入"),("v4-rotate-in","旋转"),
+        ("v4-flip-in","翻转"),("v4-fade-out","淡出")
     ]
     let emphasis = [
         ("v4-pulse","脉冲"),("v4-shake","抖动"),("v4-float","漂浮"),
-        ("v4-glow","发光"),("v4-spin","旋转")
+        ("v4-glow","发光"),("v4-spin","旋转强调")
     ]
 
     var body: some View {
@@ -591,11 +765,11 @@ struct AnimInspector: View {
                 .padding(.top, 30)
         } else {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("入场")
+                SectionHeader("入场 / 出场")
                 FlowLayout(spacing: 6) {
                     ForEach(entrance, id: \.0) { item in
                         AnimChip(label: item.1, active: store.animName == item.0) {
-                            store.applyAnim(name: item.0, dur: Double(dur) ?? 0.6, delay: Double(delay) ?? 0, ease: ease, iter: Int(iter) ?? 1)
+                            apply(item.0)
                         }
                     }
                 }
@@ -603,7 +777,7 @@ struct AnimInspector: View {
                 FlowLayout(spacing: 6) {
                     ForEach(emphasis, id: \.0) { item in
                         AnimChip(label: item.1, active: store.animName == item.0) {
-                            store.applyAnim(name: item.0, dur: Double(dur) ?? 0.6, delay: Double(delay) ?? 0, ease: ease, iter: Int(iter) ?? 1)
+                            apply(item.0)
                         }
                     }
                 }
@@ -619,12 +793,29 @@ struct AnimInspector: View {
                 }
                 .foregroundStyle(Theme.ink)
                 InspectorField(title: "次数 0=∞", text: $iter)
+                Picker("触发方式", selection: $trigger) {
+                    Text("载入即播").tag("load")
+                    Text("点击时").tag("click")
+                    Text("悬停时").tag("hover")
+                    Text("滚入视口").tag("scroll")
+                }
+                .foregroundStyle(Theme.ink)
                 HStack(spacing: 8) {
                     GlassMiniBtn("播放") { store.previewAnim() }
                     GlassMiniBtn("清除", danger: true) { store.clearAnim() }
                 }
+                Text("点击/悬停/滚入触发会随保存写入页面，浏览器打开依然生效。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.inkTertiary)
             }
+            .onAppear { trigger = store.animTrigger }
+            .onChange(of: store.animTrigger) { _, v in trigger = v }
         }
+    }
+
+    private func apply(_ name: String) {
+        store.applyAnim(name: name, dur: Double(dur) ?? 0.6, delay: Double(delay) ?? 0,
+                        ease: ease, iter: Int(iter) ?? 1, trigger: trigger)
     }
 }
 

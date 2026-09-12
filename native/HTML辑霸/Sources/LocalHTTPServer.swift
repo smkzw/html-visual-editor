@@ -166,6 +166,10 @@ final class LocalHTTPServer {
             let rel = String(path.dropFirst("/static/".count))
             Self.sendFile(conn: conn, url: staticDir.appendingPathComponent(rel), mime: "application/octet-stream")
         case path.hasPrefix("/api/live/"):
+            guard tokenOK(req) else {
+                Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json")
+                return
+            }
             live(conn: conn, req: req, rel: String(path.dropFirst("/api/live/".count)))
         case path.hasPrefix("/api/preview/") && req.method == "GET":
             let tok = path.components(separatedBy: "/").last?.replacingOccurrences(of: ".html", with: "") ?? ""
@@ -218,10 +222,15 @@ final class LocalHTTPServer {
                 "mtime": ((try? fm.attributesOfItem(atPath: p.path)[.modificationDate] as? Date) ?? Date()).timeIntervalSince1970,
                 "editable": true,
             ])
-        } else if let en = fm.enumerator(at: d, includingPropertiesForKeys: nil) {
+        } else if let en = fm.enumerator(at: d, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
             var count = 0
-            for case let u as URL in en {
-                if u.lastPathComponent.hasPrefix(".") { continue }
+            let skipDirs: Set<String> = ["node_modules", "__pycache__", "DerivedData", "venv", ".venv"]
+            outer: for case let u as URL in en {
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue {
+                    if skipDirs.contains(u.lastPathComponent) { en.skipDescendants() }
+                    continue
+                }
                 let ext = u.pathExtension.lowercased()
                 guard ["html", "htm", "css", "js", "json", "svg", "png", "jpg", "jpeg", "gif", "webp", "ico"].contains(ext) else { continue }
                 let st = (try? fm.attributesOfItem(atPath: u.path)) ?? [:]
@@ -233,7 +242,7 @@ final class LocalHTTPServer {
                     "editable": ["html", "htm", "css", "js", "json", "svg"].contains(ext),
                 ])
                 count += 1
-                if count >= 2000 { break }
+                if count >= 2000 { break outer }
             }
         }
         let pages = files.filter { ($0["ext"] as? String) == "html" || ($0["ext"] as? String) == "htm" }
@@ -320,9 +329,13 @@ final class LocalHTTPServer {
     private func previewCreate(conn: NWConnection, body: Data) {
         let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
         let html = obj["html"] as? String ?? ""
-        let tok = UUID().uuidString.prefix(16).description
         stateLock.lock()
-        previews[tok] = (html, Date().timeIntervalSince1970)
+        let now = Date().timeIntervalSince1970
+        for k in previews.keys where now - previews[k]!.ts > 300 {
+            previews.removeValue(forKey: k)
+        }
+        let tok = UUID().uuidString.prefix(16).description
+        previews[tok] = (html, now)
         stateLock.unlock()
         let (c, s) = jsonOK(["ok": true, "url": "/api/preview/\(tok).html"])
         Self.send(conn: conn, status: c, body: s, contentType: "application/json")
@@ -403,9 +416,5 @@ final class LocalHTTPServer {
             return
         }
         Self.sendFile(conn: conn, url: target, mime: mime)
-    }
-
-    private func reqHeaders(_ conn: NWConnection) -> Req {
-        Req(method: "GET", path: "/", headers: [:])
     }
 }

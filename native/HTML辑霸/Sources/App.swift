@@ -73,6 +73,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         BackendManager.shared.stop()
     }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Guard against losing unsaved canvas edits.
+        guard EditorStore.shared.dirty else { return .terminateNow }
+        if EditorStore.shared.terminateAfterSave { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "有未保存的修改"
+        alert.informativeText = "退出前要保存当前页面吗？"
+        alert.addButton(withTitle: "保存并退出")
+        alert.addButton(withTitle: "不保存，退出")
+        alert.addButton(withTitle: "取消")
+        alert.alertStyle = .warning
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            EditorStore.shared.saveAndTerminate()
+            return .terminateCancel // terminate resumes when save reports back
+        case .alertSecondButtonReturn:
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
+    }
 }
 
 /// Transparent titlebar helper

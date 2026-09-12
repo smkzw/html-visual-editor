@@ -65,9 +65,9 @@ cat > "$APP/Contents/Info.plist" << PLIST
   <key>CFBundleIdentifier</key>
   <string>local.htmleditor.jiba</string>
   <key>CFBundleVersion</key>
-  <string>4.2.0</string>
+  <string>4.3.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>4.2.0</string>
+  <string>4.3.0</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleExecutable</key>

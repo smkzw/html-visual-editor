@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>示例演示文稿 · HTML-PPT</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f5f6f8;color:#0f1115}
+  .deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+  .slide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:8vw;
+         background:#fff;transition:opacity .3s ease}
+  .slide .kicker{font-size:14px;font-weight:700;letter-spacing:3px;color:#db6b05;margin-bottom:18px}
+  .slide h1{font-size:52px;font-weight:900;margin:0 0 22px;line-height:1.15}
+  .slide p{font-size:19px;line-height:1.9;color:#525a66;max-width:640px;margin:0}
+  .slide .accent-bar{width:88px;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff9900,#ffcc00);margin-bottom:28px}
+  .pageno{position:absolute;right:28px;bottom:22px;font-size:13px;color:#7a828e;font-variant-numeric:tabular-nums}
+  .slide-2{background:linear-gradient(135deg,#fff 55%,#fff4e0)}
+  .slide-3{background:linear-gradient(160deg,#fff 60%,#eef4ff)}
+  .chip{display:inline-block;background:rgba(255,153,0,.14);color:#db6b05;border-radius:999px;
+        padding:8px 18px;font-weight:700;font-size:15px;margin:6px 8px 0 0}
+</style>
+</head>
+<body>
+<div class="deck">
+  <section class="slide slide-1">
+    <div class="kicker">HTML-PPT 示例</div>
+    <div class="accent-bar"></div>
+    <h1>像放映一样翻页</h1>
+    <p>这是一个三页的演示文稿样例。工具栏会出现「幻灯片」分组：复制页、删除页、上下翻页；按 F5 或点「演示」进入放映。</p>
+    <div><span class="chip">← → 翻页</span><span class="chip">Esc 退出</span><span class="chip">双击改字</span></div>
+    <div class="pageno">1 / 3</div>
+  </section>
+  <section class="slide slide-2">
+    <div class="kicker">第二页 · 动效</div>
+    <div class="accent-bar"></div>
+    <h1>给元素加动效</h1>
+    <p>选中这张卡片上的任意元素，打开右侧「动效」面板：入场、强调、触发方式（载入 / 点击 / 悬停 / 滚入），保存后浏览器打开依然生效。</p>
+    <div class="pageno">2 / 3</div>
+  </section>
+  <section class="slide slide-3">
+    <div class="kicker">第三页 · 保存</div>
+    <div class="accent-bar"></div>
+    <h1>所见即所存</h1>
+    <p>所有修改都会写回源文件（自动备份），也可以导出一份新文件。试试把这一页复制一份，再删掉试试。</p>
+    <div class="pageno">3 / 3</div>
+  </section>
+</div>
+</body>
+</html>
