@@ -31,6 +31,11 @@ final class EditorStore: ObservableObject {
     /// Set when the user chose "保存并退出"; terminates the app once save completes.
     var terminateAfterSave = false
 
+    /// Navigation to run after the in-flight save finishes (guard's "保存" branch).
+    /// Navigating before the async save round-trips would cancel its fetches and
+    /// silently drop the edits.
+    var pendingNavigation: (() -> Void)?
+
     enum Phase { case landing, editor }
 
     weak var webView: (any EditorWebControlling)?
@@ -40,8 +45,10 @@ final class EditorStore: ObservableObject {
     // MARK: - Unsaved-changes guard
 
     /// Returns true if it is OK to drop the current page state.
-    /// Shows a native confirm when there are unsaved edits.
-    func confirmDiscard(verb: String = "放弃当前修改") -> Bool {
+    /// Shows a native confirm when there are unsaved edits. The "保存" branch
+    /// returns false and defers the caller's continuation via `pendingNavigation`
+    /// until the save reports back.
+    func confirmDiscard(verb: String = "放弃当前修改", continuation: (() -> Void)? = nil) -> Bool {
         guard dirty else { return true }
         let alert = NSAlert()
         alert.messageText = "有未保存的修改"
@@ -52,8 +59,9 @@ final class EditorStore: ObservableObject {
         alert.alertStyle = .warning
         switch alert.runModal() {
         case .alertFirstButtonReturn:
+            pendingNavigation = continuation
             saveCurrent()
-            return true // proceed; save is async and posts its own toast on failure
+            return false // resume when onSaved fires
         case .alertSecondButtonReturn:
             dirty = false
             return true
@@ -73,12 +81,15 @@ final class EditorStore: ObservableObject {
         panel.prompt = "打开"
         if preferFile { panel.allowedContentTypes = [.html] }
         if panel.runModal() == .OK, let url = panel.url {
-            guard confirmDiscard(verb: "不保存，直接打开") else { return }
-            if url.hasDirectoryPath {
-                openProject(dir: url.path)
-            } else {
-                openSingleFile(path: url.path)
+            let open: () -> Void = {
+                if url.hasDirectoryPath {
+                    self.openProject(dir: url.path)
+                } else {
+                    self.openSingleFile(path: url.path)
+                }
             }
+            guard confirmDiscard(verb: "不保存，直接打开", continuation: open) else { return }
+            open()
         }
     }
 
@@ -122,29 +133,42 @@ final class EditorStore: ObservableObject {
         pages = p.pages
         phase = .editor
         dirty = false
-        let entry = pages.first { $0.name.lowercased().contains("index") } ?? pages.first
-        if let entry { loadPage(entry, force: true) }
+        guard let entry = pages.first(where: { $0.name.lowercased().contains("index") }) ?? pages.first else {
+            showToast("该项目内没有 HTML 页面", icon: "⚠")
+            return
+        }
+        loadPage(entry, force: true)
         showToast("已打开「\(p.name)」· \(pages.count) 个页面")
     }
 
     func goHome() {
-        guard confirmDiscard(verb: "不保存，返回首页") else { return }
-        phase = .landing
-        project = nil
-        pages = []
-        currentPage = nil
-        selectedTag = nil
-        dirty = false
-        isPPT = false
-        slides = []
-        webView?.loadBlank()
+        let home: () -> Void = {
+            self.phase = .landing
+            self.project = nil
+            self.pages = []
+            self.currentPage = nil
+            self.selectedTag = nil
+            self.dirty = false
+            self.isPPT = false
+            self.slides = []
+            self.webView?.loadBlank()
+        }
+        guard confirmDiscard(verb: "不保存，返回首页", continuation: home) else { return }
+        home()
     }
 
     // MARK: - Page
 
     func loadPage(_ page: PageFile, force: Bool = false) {
         if !force && page.path == currentPage?.path { return }
-        if !force { guard confirmDiscard(verb: "不保存，切换页面") else { return } }
+        if !force {
+            let load: () -> Void = { self.performLoad(page) }
+            guard confirmDiscard(verb: "不保存，切换页面", continuation: load) else { return }
+        }
+        performLoad(page)
+    }
+
+    private func performLoad(_ page: PageFile) {
         currentPage = page
         dirty = false
         selectedTag = nil
@@ -179,10 +203,15 @@ final class EditorStore: ObservableObject {
     }
 
     func onSaved(ok: Bool) {
+        if !ok { terminateAfterSave = false }
         if ok && terminateAfterSave {
             terminateAfterSave = false
             NSApp.terminate(nil)
+            return
         }
+        let nav = pendingNavigation
+        pendingNavigation = nil
+        if ok, let nav { nav() }
     }
 
     func enterPresent() {

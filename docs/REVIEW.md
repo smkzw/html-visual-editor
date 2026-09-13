@@ -160,3 +160,39 @@ html编辑器/
   docs/
     REVIEW.md
 ```
+
+## 0.1 v4.3.1 会商 LOOP（2026-09-13 下午）— 用户报告 P0 后的完整回归
+
+用户实测报告「打开任何 HTML 显示 {"detail":"not found"} 且黑屏、工具栏全暗」。启动会商机制（用户视角 / 工程师视角 / 对抗测试 / 代码审计 / 稳定性 / 数据完整性，每轮独立 prompt），共 6 轮测试-修订-再测试 LOOP。
+
+### 用户报告的 P0 根因链（Round-0 复现）
+
+| 现象 | 根因 | 修复 |
+|------|------|------|
+| 工具栏全暗 | 系统深色模式下 `.regularMaterial` 变深色材质，墨色文字不可读 | 窗口强制浅色外观（`NSAppearance .aqua`，符合 kangzhe 全轨浅色铁律） |
+| 黑屏 + not found | WKWebView 深色模式渲染无样式 JSON 404 → 黑底白字 | 404 改浅色 HTML 错误页 + 外观强制 |
+| not found 本体 | 引擎绑定 `*:9100`（全网卡）+ 多实例并存时请求分裂到不同 root 的实例 | 绑定收紧 127.0.0.1（`requiredLocalEndpoint`）+ 单实例互斥（DistributedNotificationCenter，后来者自退、前任前置） |
+
+### 会商各轮新发现与修复
+
+| 轮次 | 视角 | 发现 → 修复 |
+|------|------|------------|
+| R1 | 用户（浏览器侧）+ 工程师（合同） | 遗留 Web UI 暴露根路径且会话协议断裂 → `/` 改引擎说明页；previewAnim `animation=''` 级联清空 longhand（预览即销毁动效）→ longhand 快照恢复；open 不存在路径返回 200 假项目并踢会话 → 存在性校验；re-exec 单引号路径断裂 → `$1` 参数传递；端口千分位 `9,100` → `Text(verbatim:)`；strip 残留 `data-v4-*` → 清除 |
+| R2 | 对抗测试 + 代码审计 | **引擎绑全网卡 + read/save 无 token（局域网未授权读写）** → loopback 绑定 + token 校验；`<base href>` 反射注入（同源 XSS 进原生桥）→ HTML 属性转义；兄弟目录前缀绕过（`proj` vs `proj2`）→ 围栏加 `/` 边界；目录 save 假成功 → isDir 校验；守卫「保存后导航」中止异步 fetch 静默丢稿 → pendingNavigation 续延；点击空白选中 body、Delete 删掉整个 body → 结构根元素禁选；外链/重定向把 token 带离项目 → decidePolicyFor 白名单（同 host）；save 写盘失败假成功 → 错误返回；undo 后触发式动画失活 → restore 重挂 runtime；负 Content-Length 崩溃 / 请求无上限 → 校验 + 64MB 上限；/static 穿越 → 围栏；备份同秒覆盖 + 无限累积 → 毫秒时间戳 + 轮转 keep=20；演示键码错误（`[`/`I`）→ PageUp/Down；侧栏图标恒假 → ext 无点比较；防抖竞态误施新元素 → 元素指纹校验；根相对资源（/style.css）404 → 根路径映射项目目录 |
+| R2.5 | 自测回归 | 保存注入回归：`JSONSerialization([path])` 把 `__jibaPath` 变数组 → 全部保存 403「不在项目内」；改字符串顶层 → NSJSONSerialization 崩溃 → 终案：数组序列化 + JS `[0]` 解包 |
+| R3 | 终验合同 | 备份轮转在串行 HTTP 队列同步枚举目录，FS 瞬时阻塞死锁全引擎 → 轮转移后台队列 |
+| R4 | 稳定性 | 轮转按字典序，垃圾 `*.bak.<hash>` 挤掉真实时间戳备份 → 按 mtime 排序 |
+| R5/R6 | 数据完整性 / UI 终验 | **P0-P4 清零**（连续两轮） |
+
+### LOOP 证据
+
+- 20 连发保存全部 200、单次 ≤2.4ms；3MB 报文 38.5ms；21 并发混合轰炸 63ms 全响应；pkill 秒级恢复
+- 端到端数据链：open→live 逐字节一致→编辑保存 diff 仅预期行→备份恰为保存前版本→跨会话持久 ✓
+- UI：打开面板中文/空格文件名、33MB 真实文档渲染、动效应用+播放+保存落盘、PPT 翻/复制/删除页、演示进出无黑屏、守卫保存后自动续导航、深色系统下全浅色可读
+
+### 已知遗留
+
+- 双击改字后的键盘输入路径未自动化（AX 无法写 contenteditable），需人工验证
+- `~/Applications` 下升级安装时旧实例若在运行，双击只激活旧版——升级前请先退出旧实例
+- 9100 被第三方进程占用时两实例并存的可能仍在（低概率，cookie 按域共享会互踩）
+- 演示模式 cover 缩放在极端宽高比下会裁切边缘（contain 更保守，未改）

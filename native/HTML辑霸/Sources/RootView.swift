@@ -188,7 +188,7 @@ struct PreviewStage: View {
                     Circle().fill(.yellow.opacity(0.85)).frame(width: 10, height: 10)
                     Circle().fill(.green.opacity(0.8)).frame(width: 10, height: 10)
                     Spacer()
-                    Text("127.0.0.1:\(port)/api/live/index.html")
+                    Text(verbatim: "127.0.0.1:\(port)/api/live/index.html")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Theme.inkTertiary)
                 }

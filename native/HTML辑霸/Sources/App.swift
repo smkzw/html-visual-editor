@@ -18,6 +18,10 @@ struct HTMLJibaApp: App {
                     window.titleVisibility = .hidden
                     window.isMovableByWindowBackground = true
                     window.toolbarStyle = .unifiedCompact
+                    // Light-only brand (kangzhe core): in Dark Mode the regular
+                    // materials go near-black and ink text becomes unreadable, and
+                    // WKWebView renders unstyled JSON black — force aqua.
+                    window.appearance = NSAppearance(named: .aqua)
                 })
         }
         .windowStyle(.hiddenTitleBar)
@@ -49,6 +53,8 @@ struct HTMLJibaApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static let instanceNotification = Notification.Name("local.htmleditor.jiba.launched")
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // LaunchServices-launched copies of this app accept GET but stall on POST
         // to localhost. Re-exec through bash with a clean env so the process is
@@ -57,7 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let exe = Bundle.main.executableURL?.path ?? "/usr/bin/true"
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/bash")
-            p.arguments = ["-lc", "JIBA_REEXEC=1 exec '\(exe)'"]
+            // Pass the path as $1 (never string-interpolated) so quotes/spaces/
+            // CJK in the install path can't break the shell command.
+            p.arguments = ["-lc", "JIBA_REEXEC=1 exec \"$1\"", "--", exe]
             p.standardOutput = FileHandle.nullDevice
             p.standardError = FileHandle.nullDevice
             try? p.run()
@@ -67,8 +75,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         BackendManager.shared.start()
+        // Single instance: if 9100 is already served by another copy of this app
+        // (we had to fall back to a higher port), hand off to it and quit — two
+        // live instances would share one cookie jar across different ports.
+        if BackendManager.shared.port != 9100 && Self.probeIsJiba(port: 9100) {
+            DistributedNotificationCenter.default().post(
+                name: Self.instanceNotification, object: nil)
+            NSApp.terminate(nil)
+            return
+        }
+        // Announce AFTER our server is up so an already-running instance comes
+        // front; the newcomer above quits instead of lingering.
+        DistributedNotificationCenter.default().post(
+            name: Self.instanceNotification, object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            forName: Self.instanceNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            NSApp.activate(ignoringOtherApps: true)
+            self?.window?.makeKeyAndOrderFront(nil)
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// True when `port` answers with this app's engine signature.
+    private static func probeIsJiba(port: UInt16) -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/api/info") else { return false }
+        var ok = false
+        let sem = DispatchSemaphore(value: 0)
+        var result = Data()
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 0.7
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            result = data ?? Data(); sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 0.9)
+        ok = String(data: result, encoding: .utf8)?.contains("native_picker") == true
+        return ok
+    }
+
+    private var window: NSWindow? {
+        NSApp.windows.first { $0.isVisible }
     }
     func applicationWillTerminate(_ notification: Notification) {
         BackendManager.shared.stop()

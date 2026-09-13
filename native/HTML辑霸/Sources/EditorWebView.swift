@@ -98,6 +98,7 @@ struct EditorWebView: NSViewRepresentable {
         func requestSave() {
             // comma-expression: save() is async and returns a Promise the
             // evaluator can't serialize (noise error otherwise)
+            dbg("requestSave → eval")
             eval("window.__jiba && (window.__jiba.save(), undefined)")
         }
 
@@ -107,6 +108,22 @@ struct EditorWebView: NSViewRepresentable {
 
         func exitPresent() {
             eval("window.__jiba && window.__jiba.present(false)")
+        }
+
+        /// Native "导出" — write the serialized HTML wherever the user chooses.
+        @MainActor
+        private func exportHTMLPanel(_ html: String) {
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.html]
+            panel.nameFieldStringValue = (store.currentPage?.name ?? "export.html")
+                .replacingOccurrences(of: ".html", with: "_导出.html")
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                try html.write(to: url, atomically: true, encoding: .utf8)
+                store.showToast("已导出 \(url.lastPathComponent)")
+            } catch {
+                store.showToast("导出失败: \(error.localizedDescription)", icon: "⚠")
+            }
         }
 
         func dbg(_ s: String) {
@@ -160,16 +177,35 @@ struct EditorWebView: NSViewRepresentable {
                 Task { @MainActor in store.showToast(msg) }
             case "saved":
                 let ok = body["ok"] as? Bool ?? false
+                dbg("saved ok=\(ok) msg=\(body["msg"] as? String ?? "")")
                 let msg = body["msg"] as? String ?? ""
                 Task { @MainActor in
                     store.dirty = !ok ? store.dirty : false
                     store.showToast(msg, icon: ok ? "✓" : "⚠")
                     store.onSaved(ok: ok)
                 }
+            case "export":
+                let html = body["html"] as? String ?? ""
+                Task { @MainActor in self.exportHTMLPanel(html) }
             case "muted":
                 break
             default:
                 break
+            }
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            // Allow everything on our engine host (live pages, in-page links the
+            // root mapping serves, AND the save/read fetches). Anything else
+            // (external links, hostile redirects) is rejected so the bridge,
+            // project path and session token never reach a foreign origin.
+            if let url = navigationAction.request.url,
+               url.host == "127.0.0.1" || url.host == "localhost" || url.scheme == "about" {
+                decisionHandler(.allow)
+            } else {
+                Task { @MainActor in store.showToast("已阻止离开项目的导航", icon: "ℹ") }
+                decisionHandler(.cancel)
             }
         }
 
@@ -187,14 +223,22 @@ struct EditorWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             dbg("didFinish")
-            if let path = store.currentPage?.path {
-                let esc = path
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "'", with: "\\'")
-                webView.evaluateJavaScript("window.__jibaPath='\(esc)'", completionHandler: nil)
+            // Only arm the bridge on engine pages; a foreign document (should be
+            // blocked by decidePolicyFor) must never learn path or token.
+            guard let url = webView.url, url.path.hasPrefix("/api/live/") else { return }
+            // NSJSONSerialization rejects top-level strings, so serialize as a
+            // one-element array and index [0] on the JS side. (Passing the bare
+            // array once made __jibaPath an array and every save died with
+            // "不在项目内"; a raw string literal crashes JSON write.)
+            if let path = store.currentPage?.path,
+               let data = try? JSONSerialization.data(withJSONObject: [path]),
+               let lit = String(data: data, encoding: .utf8) {
+                webView.evaluateJavaScript("window.__jibaPath=(\(lit))[0]", completionHandler: nil)
             }
-            if let token = store.liveToken {
-                webView.evaluateJavaScript("window.__jibaToken='\(token)'", completionHandler: nil)
+            if let token = store.liveToken,
+               let data = try? JSONSerialization.data(withJSONObject: [token]),
+               let lit = String(data: data, encoding: .utf8) {
+                webView.evaluateJavaScript("window.__jibaToken=(\(lit))[0]", completionHandler: nil)
             }
             webView.evaluateJavaScript("!!window.__jiba") { ok, _ in
                 if (ok as? Bool) != true {
@@ -302,12 +346,14 @@ struct EditorWebView: NSViewRepresentable {
               x.style.removeProperty('position');
               x.removeAttribute('data-j-was-static');
             });
+            root.querySelectorAll('[data-v4-anim]').forEach(x=>x.removeAttribute('data-v4-anim'));
+            root.querySelectorAll('[data-v4-trigger]').forEach(x=>x.removeAttribute('data-v4-trigger'));
             root.querySelectorAll('base[href^="/api/live/"]').forEach(x=>x.remove());
             root.querySelectorAll('[data-v4-ppt]').forEach(s=>{
-              const o=s.getAttribute('data-v4-orig-opacity'); const pe=s.getAttribute('data-v4-orig-pe');
+              const o=s.getAttribute('data-v4-orig-opacity'); const pe=s.getAttribute('data-v4-orig-pe'); const tr=s.getAttribute('data-v4-orig-transition');
               s.style.removeProperty('opacity'); s.style.removeProperty('pointer-events'); s.style.removeProperty('transition');
-              if(o) s.style.opacity=o; if(pe) s.style.pointerEvents=pe;
-              s.removeAttribute('data-v4-ppt'); s.removeAttribute('data-v4-orig-opacity'); s.removeAttribute('data-v4-orig-pe');
+              if(o) s.style.opacity=o; if(pe) s.style.pointerEvents=pe; if(tr) s.style.transition=tr;
+              s.removeAttribute('data-v4-ppt'); s.removeAttribute('data-v4-orig-opacity'); s.removeAttribute('data-v4-orig-pe'); s.removeAttribute('data-v4-orig-transition');
             });
             root.querySelectorAll('[class=""]').forEach(x=>x.removeAttribute('class'));
             root.querySelectorAll('[style=""]').forEach(x=>x.removeAttribute('style'));
@@ -323,6 +369,14 @@ struct EditorWebView: NSViewRepresentable {
 
           function undo(){ if(!undoStack.length){ post({type:'toast',msg:'没有可撤销的操作'}); return;} const cur=snapshot(); if(cur) redoStack.push(cur); restore(undoStack.pop()); post({type:'dirty'}); }
           function redo(){ if(!redoStack.length){ post({type:'toast',msg:'没有可重做的操作'}); return;} const cur=snapshot(); if(cur){ undoStack.push(cur); if(undoStack.length>MAX) undoStack.shift(); } restore(redoStack.pop()); post({type:'dirty'}); }
+
+          function restore(html){
+            deselect(); document.body.innerHTML=html; injectStyles(); bind(); detectPPT();
+            // Re-arm trigger animations: the DOM swap destroyed listeners, and
+            // re-created elements are not armed.
+            ensureAnimRuntime();
+            document.querySelectorAll('[data-jiba-anim]').forEach(el=>{ if(window.__jibaAnimArm) window.__jibaAnimArm(el); });
+          }
 
           function removeHandles(){
             document.querySelectorAll('.j-handle').forEach(h=>h.remove());
@@ -429,6 +483,9 @@ struct EditorWebView: NSViewRepresentable {
               if(editing||presentMode) return;
               const el=e.target; if(!el||el.nodeType!==1||el.hasAttribute('data-v4')) return;
               if(el.classList.contains('j-handle')) return;
+              // never select structural roots: deleting body via keyboard would
+              // destroy the whole document
+              if(['HTML','BODY','HEAD'].includes(el.tagName)) return;
               e.preventDefault(); e.stopPropagation();
               select(el);
             }, true);
@@ -496,6 +553,7 @@ struct EditorWebView: NSViewRepresentable {
                 if(!s.hasAttribute('data-v4-ppt')){
                   s.setAttribute('data-v4-orig-opacity', s.style.opacity||'');
                   s.setAttribute('data-v4-orig-pe', s.style.pointerEvents||'');
+                  s.setAttribute('data-v4-orig-transition', s.style.transition||'');
                   s.style.setProperty('transition','opacity .3s ease','important');
                 }
                 s.setAttribute('data-v4-ppt','1');
@@ -600,15 +658,23 @@ struct EditorWebView: NSViewRepresentable {
               selected.removeAttribute('data-jiba-anim');
               selected.removeAttribute('data-v4-anim');
               selected.removeAttribute('data-v4-trigger');
-              if(!document.querySelector('[data-jiba-anim]')){
-                const rt=document.getElementById('jiba-anim-runtime'); if(rt) rt.remove();
-              }
+              // Keep jiba-anim-runtime in place — undo may bring animations back
+              // and an idle runtime is harmless.
               post({type:'dirty'}); emitSelection();
             },
             previewAnim(){
               if(!selected) return;
               if(window.__jibaPlay && selected.hasAttribute('data-jiba-anim')){ window.__jibaPlay(selected); return; }
-              selected.style.animation='none'; void selected.offsetWidth; selected.style.animation='';
+              // Shorthand assignment/removal clears every longhand, so snapshot
+              // the longhands, force a reflow with a throwaway shorthand, remove
+              // it ONCE, then restore each longhand.
+              const st=selected.style;
+              const props=['animation-name','animation-duration','animation-delay','animation-timing-function','animation-iteration-count','animation-fill-mode'];
+              const saved=props.map(p=>st.getPropertyValue(p));
+              st.setProperty('animation','none');
+              void selected.offsetWidth;
+              st.removeProperty('animation');
+              props.forEach((p,i)=>{ if(saved[i]) st.setProperty(p,saved[i]); });
             },
             align(mode){
               if(!selected||!selected.parentNode) return;
@@ -710,12 +776,9 @@ struct EditorWebView: NSViewRepresentable {
             },
             setDevice(w,h){ /* frame size handled by Swift */ },
             export(){
-              const html=serializeFull();
-              const blob=new Blob([html],{type:'text/html;charset=utf-8'});
-              const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-              a.download=(document.title||'export')+'_导出.html';
-              document.body.appendChild(a); a.click(); a.remove();
-              post({type:'toast',msg:'已导出'});
+              // Hand the HTML to the host — blob download is silently dropped
+              // in WKWebView. Native save panel takes over.
+              post({type:'export', html:serializeFull()});
             },
             copySelected(){ if(!selected) return; window.__jibaClip=selected.cloneNode(true); post({type:'toast',msg:'已复制'}); },
             cutSelected(){ if(!selected) return; pushUndo(); window.__jibaClip=selected.cloneNode(true); selected.remove(); deselect(); post({type:'dirty'}); },
@@ -790,7 +853,7 @@ struct EditorWebView: NSViewRepresentable {
     }
 }
 
-/// Avoid retain cycle issues with WKScriptMessage handler
+        /// Avoid retain cycle issues with WKScriptMessage handler
 final class LeakyScriptHandler: NSObject, WKScriptMessageHandler {
     let cb: (WKScriptMessage) -> Void
     init(_ cb: @escaping (WKScriptMessage) -> Void) { self.cb = cb }

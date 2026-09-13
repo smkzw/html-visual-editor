@@ -20,11 +20,18 @@ final class LocalHTTPServer {
     private var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
     func start(preferred: UInt16 = 9100) throws {
-        for p in preferred..<(preferred + 20) {
+        for p in preferred..<(preferred + 40) {
             let params = NWParameters.tcp
-            params.allowLocalEndpointReuse = true
+            // NO allowLocalEndpointReuse: with it, a second app instance can bind
+            // the same port while an old instance still listens, and requests get
+            // split between two servers with different project roots → phantom 404s.
+            // If the port is truly taken (or in TIME_WAIT), fall through to p+1.
+            // Loopback ONLY — the engine serves local files and must never be
+            // reachable from the network.
+            params.requiredLocalEndpoint = NWEndpoint.hostPort(
+                host: "127.0.0.1" as NWEndpoint.Host, port: NWEndpoint.Port(rawValue: p)!)
             guard let nwPort = NWEndpoint.Port(rawValue: p) else { continue }
-            let listener = try NWListener(using: params, on: nwPort)
+            let listener = try NWListener(using: params)
             listener.newConnectionHandler = { [weak self] conn in
                 self?.handle(conn)
             }
@@ -61,6 +68,13 @@ final class LocalHTTPServer {
     }
 
     private func receive(conn: NWConnection, buffer: Data) {
+        // Hard cap: header + body must stay well under this (page saves are
+        // at most a few MB). Prevents unbounded memory growth.
+        let maxRequest: Int = 64 * 1024 * 1024
+        if buffer.count > maxRequest {
+            Self.send(conn: conn, status: 413, body: #"{"detail":"请求过大"}"#, contentType: "application/json")
+            return
+        }
         conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { conn.cancel(); return }
             var buf = buffer
@@ -70,6 +84,10 @@ final class LocalHTTPServer {
                 let bodyStart = buf[range.upperBound...]
                 if let req = Self.parseRequest(head: head) {
                     let need = req.contentLength
+                    guard need >= 0, buf.count - (bodyStart.startIndex - buf.startIndex) <= maxRequest else {
+                        Self.send(conn: conn, status: 400, body: #"{"detail":"bad request length"}"#, contentType: "application/json")
+                        return
+                    }
                     if bodyStart.count >= need {
                         let body = Data(bodyStart.prefix(need))
                         self.respond(conn: conn, req: req, body: body)
@@ -161,13 +179,31 @@ final class LocalHTTPServer {
             let (c, s) = jsonOK(["platform": "macos", "native_picker": true])
             Self.send(conn: conn, status: c, body: s, contentType: "application/json")
         case path == "/" || path == "/index.html":
-            Self.sendFile(conn: conn, url: staticDir.appendingPathComponent("index.html"), mime: "text/html; charset=utf-8")
+            // The bundled legacy web editor is not served at "/" — it was kept for
+            // reference but its session protocol diverged from this engine and it
+            // dead-ends with confusing errors. Point people to the app instead.
+            Self.send(conn: conn, status: 200, body: Self.errorPage(
+                title: "HTML辑霸 引擎运行中",
+                detail: "本引擎只服务于 HTML辑霸 App（127.0.0.1:\(port)）。\n请打开 App 进行编辑；本页面不是编辑器界面。"),
+                contentType: "text/html; charset=utf-8")
         case path.hasPrefix("/static/"):
             let rel = String(path.dropFirst("/static/".count))
-            Self.sendFile(conn: conn, url: staticDir.appendingPathComponent(rel), mime: "application/octet-stream")
-        case path.hasPrefix("/api/live/"):
+            let fp = staticDir.appendingPathComponent(rel).standardizedFileURL
+            guard fp.path.hasPrefix(staticDir.path + "/") else {
+                Self.send(conn: conn, status: 403, body: #"{"detail":"forbidden"}"#, contentType: "application/json")
+                return
+            }
+            Self.sendFile(conn: conn, url: fp, mime: "application/octet-stream")
+        case path.hasPrefix("/api/live"):
             guard tokenOK(req) else {
                 Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json")
+                return
+            }
+            if path == "/api/live" || path == "/api/live/" {
+                Self.send(conn: conn, status: 404, body: Self.errorPage(
+                    title: "页面不存在",
+                    detail: "未指定页面路径。请从 App 内打开具体页面。"),
+                    contentType: "text/html; charset=utf-8")
                 return
             }
             live(conn: conn, req: req, rel: String(path.dropFirst("/api/live/".count)))
@@ -182,14 +218,57 @@ final class LocalHTTPServer {
         case path == "/api/project/open" && req.method == "POST":
             projectOpen(conn: conn, body: body)
         case path == "/api/project/read" && req.method == "POST":
-            projectRead(conn: conn, body: body)
+            projectRead(conn: conn, req: req, body: body)
         case path == "/api/project/save-raw" && req.method == "POST":
-            projectSave(conn: conn, body: body)
+            projectSave(conn: conn, req: req, body: body)
         case path == "/api/preview" && req.method == "POST":
             previewCreate(conn: conn, body: body)
         case path == "/api/analyze" && req.method == "POST":
             analyze(conn: conn, body: body)
+        case path.hasPrefix("/api/") || path.hasPrefix("/api"):
+            Self.send(conn: conn, status: 404, body: #"{"detail":"not found"}"#, contentType: "application/json")
         default:
+            // Root-relative resources (/style.css, /about, /favicon.ico): when a
+            // project is open, resolve them against the project root so real
+            // site projects render with their absolute-path assets.
+            if req.method == "GET", tokenOK(req), !path.contains("..") {
+                stateLock.lock(); let r = root; stateLock.unlock()
+                if let r {
+                    let raw = String(path.dropFirst())
+                    let rel = raw.removingPercentEncoding ?? raw
+                    var target = r.appendingPathComponent(rel).standardizedFileURL
+                    guard target.path.hasPrefix(r.path + "/") else {
+                        Self.send(conn: conn, status: 403, body: #"{"detail":"路径越界"}"#, contentType: "application/json")
+                        return
+                    }
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir), isDir.boolValue {
+                        target = target.appendingPathComponent("index.html")
+                    }
+                    if FileManager.default.fileExists(atPath: target.path) {
+                        let ext = target.pathExtension.lowercased()
+                        let mime: String
+                        switch ext {
+                        case "html", "htm": mime = "text/html; charset=utf-8"
+                        case "css": mime = "text/css; charset=utf-8"
+                        case "js", "mjs": mime = "application/javascript; charset=utf-8"
+                        case "json": mime = "application/json"
+                        case "svg": mime = "image/svg+xml"
+                        case "png": mime = "image/png"
+                        case "jpg", "jpeg": mime = "image/jpeg"
+                        case "gif": mime = "image/gif"
+                        case "webp": mime = "image/webp"
+                        case "ico": mime = "image/x-icon"
+                        case "woff": mime = "font/woff"
+                        case "woff2": mime = "font/woff2"
+                        case "ttf": mime = "font/ttf"
+                        default: mime = "application/octet-stream"
+                        }
+                        Self.sendFile(conn: conn, url: target, mime: mime)
+                        return
+                    }
+                }
+            }
             Self.send(conn: conn, status: 404, body: #"{"detail":"not found"}"#, contentType: "application/json")
         }
     }
@@ -209,8 +288,24 @@ final class LocalHTTPServer {
         let raw = file.isEmpty ? dir : file
         let p = URL(fileURLWithPath: raw).standardizedFileURL
         let d = file.isEmpty ? p : p.deletingLastPathComponent()
-        guard d.path.hasPrefix(home.path) else {
+        guard d.path.hasPrefix(home.path + "/") || d.path == home.path else {
             Self.send(conn: conn, status: 403, body: #"{"detail":"项目必须在用户主目录内"}"#, contentType: "application/json")
+            return
+        }
+        // Existence check — a missing path must not yield a fake empty project
+        // (and must not rotate the session token of the project being edited).
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: p.path, isDirectory: &isDir) else {
+            let (_, body) = jsonOK(["detail": "文件或目录不存在：\(raw)"])
+            Self.send(conn: conn, status: 404, body: body, contentType: "application/json")
+            return
+        }
+        if file.isEmpty && !isDir.boolValue {
+            Self.send(conn: conn, status: 400, body: #"{"detail":"所选路径不是文件夹"}"#, contentType: "application/json")
+            return
+        }
+        if !file.isEmpty && isDir.boolValue {
+            Self.send(conn: conn, status: 400, body: #"{"detail":"所选路径是文件夹，请用打开文件夹"}"#, contentType: "application/json")
             return
         }
         var files: [[String: Any]] = []
@@ -259,11 +354,19 @@ final class LocalHTTPServer {
             "is_split": !pages.isEmpty && (!css.isEmpty || !js.isEmpty),
             "is_multipage": pages.count > 1,
         ]
-        let (c, s) = jsonOK(payload)
-        Self.send(conn: conn, status: c, body: s, contentType: "application/json")
+        let (_, s) = jsonOK(payload)
+        // Session cookie for web-origin requests (the native app sends the header;
+        // browser-loaded pages can only authenticate via cookie).
+        let cookie = "project_token=\(tok); Path=/; HttpOnly; SameSite=Lax"
+        Self.send(conn: conn, status: 200, body: s, contentType: "application/json",
+                  extra: ["Set-Cookie": cookie])
     }
 
-    private func projectRead(conn: NWConnection, body: Data) {
+    private func projectRead(conn: NWConnection, req: Req, body: Data) {
+        guard tokenOK(req) else {
+            Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json")
+            return
+        }
         let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
         let path = obj["path"] as? String ?? ""
         stateLock.lock(); let r = root; stateLock.unlock()
@@ -272,7 +375,7 @@ final class LocalHTTPServer {
             return
         }
         let p = URL(fileURLWithPath: path).standardizedFileURL
-        guard p.path.hasPrefix(r.path) else {
+        guard p.path.hasPrefix(r.path + "/") else {
             Self.send(conn: conn, status: 403, body: #"{"detail":"文件必须在项目内"}"#, contentType: "application/json")
             return
         }
@@ -291,7 +394,11 @@ final class LocalHTTPServer {
         Self.send(conn: conn, status: c, body: s, contentType: "application/json")
     }
 
-    private func projectSave(conn: NWConnection, body: Data) {
+    private func projectSave(conn: NWConnection, req: Req, body: Data) {
+        guard tokenOK(req) else {
+            Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json")
+            return
+        }
         let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
         let path = obj["path"] as? String ?? ""
         let content = obj["content"] as? String ?? ""
@@ -302,8 +409,13 @@ final class LocalHTTPServer {
             return
         }
         let p = URL(fileURLWithPath: path).standardizedFileURL
-        guard p.path.hasPrefix(r.path) else {
+        guard p.path.hasPrefix(r.path + "/") else {
             Self.send(conn: conn, status: 403, body: #"{"detail":"不在项目内"}"#, contentType: "application/json")
+            return
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: p.path, isDirectory: &isDir), !isDir.boolValue else {
+            Self.send(conn: conn, status: 400, body: #"{"detail":"保存目标不是文件"}"#, contentType: "application/json")
             return
         }
         let fm = FileManager.default
@@ -314,16 +426,56 @@ final class LocalHTTPServer {
                 Self.send(conn: conn, status: 409, body: #"{"detail":"文件已被外部修改"}"#, contentType: "application/json")
                 return
             }
-            let bak = p.path + ".bak.\(Int(Date().timeIntervalSince1970))"
-            try? fm.copyItem(atPath: p.path, toPath: bak)
+            // Millisecond stamp + rotation: same-second saves must not clobber
+            // the previous backup, and .bak files must not pile up forever.
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd-HH-mm-ss-SSS"
+            let bak = p.path + ".bak." + fmt.string(from: Date())
+            do {
+                try fm.copyItem(atPath: p.path, toPath: bak)
+                // Rotation only trims old .bak files — run it OFF the serial HTTP
+                // queue: a transient filesystem stall in directory enumeration
+                // deadlocked the whole engine (observed), so it must never run
+                // inline here.
+                let target = p
+                DispatchQueue.global(qos: .utility).async {
+                    Self.rotateBackups(of: target, keep: 20)
+                }
+            } catch {
+                Self.send(conn: conn, status: 500, body: "{\"detail\":\"备份失败，未写入: \(error.localizedDescription)\"}", contentType: "application/json")
+                return
+            }
         }
-        try? content.write(to: p, atomically: true, encoding: .utf8)
+        do {
+            try content.write(to: p, atomically: true, encoding: .utf8)
+        } catch {
+            Self.send(conn: conn, status: 500, body: "{\"detail\":\"写入失败: \(error.localizedDescription)\"}", contentType: "application/json")
+            return
+        }
         let st = (try? fm.attributesOfItem(atPath: p.path)) ?? [:]
         let (c, s) = jsonOK([
             "ok": true, "path": p.path, "size": content.utf8.count,
             "mtime": (st[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
         ])
         Self.send(conn: conn, status: c, body: s, contentType: "application/json")
+    }
+
+    /// Keep the `keep` most recently MODIFIED .bak files next to `p`.
+    /// Runs off the HTTP queue. mtime order (not lexical): foreign tools that
+    /// also write `*.bak.<hash>` must not crowd out real timestamped backups.
+    static func rotateBackups(of p: URL, keep: Int) {
+        let fm = FileManager.default
+        let dir = p.deletingLastPathComponent()
+        let stem = p.lastPathComponent + ".bak."
+        guard let items = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        let dated = items.filter { $0.hasPrefix(stem) }.map { name -> (String, Date) in
+            let url = dir.appendingPathComponent(name)
+            let attrs = try? fm.attributesOfItem(atPath: url.path)
+            return (name, (attrs?[.modificationDate] as? Date) ?? .distantPast)
+        }
+        for (i, entry) in dated.sorted(by: { $0.1 > $1.1 }).enumerated() where i >= keep {
+            try? fm.removeItem(atPath: dir.appendingPathComponent(entry.0).path)
+        }
     }
 
     private func previewCreate(conn: NWConnection, body: Data) {
@@ -366,7 +518,7 @@ final class LocalHTTPServer {
         }
         let decoded = rel.removingPercentEncoding ?? rel
         var target = r.appendingPathComponent(decoded).standardizedFileURL
-        if !target.path.hasPrefix(r.path) {
+        if !target.path.hasPrefix(r.path + "/") {
             Self.send(conn: conn, status: 403, body: #"{"detail":"路径越界"}"#, contentType: "application/json")
             return
         }
@@ -392,15 +544,32 @@ final class LocalHTTPServer {
         case "ttf": mime = "font/ttf"
         default: mime = "application/octet-stream"
         }
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            // Friendly light-styled page — a bare JSON 404 renders as an
+            // unreadable black screen in the webview (dark default text).
+            Self.send(conn: conn, status: 404, body: Self.errorPage(
+                title: "页面不存在",
+                detail: "在项目目录中找不到 \(decoded)。\n可能文件已被移动、重命名，或会话已切换到其他项目。请重新打开文件。"),
+                contentType: "text/html; charset=utf-8")
+            return
+        }
         // Inject <base> so root-relative assets (/style.css) resolve under /api/live/
         if ext == "html" || ext == "htm" {
             guard var html = try? String(contentsOf: target, encoding: .utf8) else {
                 Self.sendFile(conn: conn, url: target, mime: mime)
                 return
             }
-            // Directory of this file relative to live root → base path
+            // Directory of this file relative to live root → base path.
+            // HTML-attribute-escaped: the path segments come from the request URL
+            // and a hostile directory name must not break out of the attribute.
             let dirRel = String(decoded).components(separatedBy: "/").dropLast().joined(separator: "/")
-            let baseHref = dirRel.isEmpty ? "/api/live/" : "/api/live/" + dirRel + "/"
+            let esc: (String) -> String = { s in
+                s.replacingOccurrences(of: "&", with: "&amp;")
+                    .replacingOccurrences(of: "\"", with: "&quot;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                    .replacingOccurrences(of: ">", with: "&gt;")
+            }
+            let baseHref = dirRel.isEmpty ? "/api/live/" : "/api/live/" + esc(dirRel) + "/"
             let baseTag = "<base href=\"\(baseHref)\">"
             if let r = html.range(of: "<head[^>]*>", options: .regularExpression) {
                 html.insert(contentsOf: baseTag, at: r.upperBound)
@@ -416,5 +585,21 @@ final class LocalHTTPServer {
             return
         }
         Self.sendFile(conn: conn, url: target, mime: mime)
+    }
+
+    /// Light-only inline error page for live render failures.
+    static func errorPage(title: String, detail: String) -> String {
+        let esc = detail
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+        return """
+        <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>\(title)</title>
+        <style>body{margin:0;font-family:PingFang SC,sans-serif;background:#f5f6f8;color:#0f1115;
+        display:flex;align-items:center;justify-content:center;min-height:100vh}
+        .card{background:#fff;border-radius:16px;padding:40px 48px;max-width:460px;
+        box-shadow:0 8px 32px rgba(0,0,0,.08);border-top:4px solid #ff9900}
+        h1{font-size:20px;margin:0 0 12px}p{font-size:14px;line-height:1.8;color:#525a66;white-space:pre-wrap;margin:0}</style>
+        </head><body><div class="card"><h1>⚠️ \(title)</h1><p>\(esc)</p></div></body></html>
+        """
     }
 }

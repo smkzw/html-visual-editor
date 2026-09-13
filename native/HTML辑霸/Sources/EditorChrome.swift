@@ -363,7 +363,7 @@ struct SidebarPanel: View {
                             store.loadPage(page)
                         } label: {
                             HStack(spacing: 8) {
-                                Image(systemName: page.ext == ".html" ? "doc.text" : "doc")
+                                Image(systemName: page.ext == "html" ? "doc.text" : "doc")
                                     .foregroundStyle(Theme.accentDeep)
                                 Text(page.rel)
                                     .lineLimit(1)
@@ -572,9 +572,9 @@ final class PresentKeyMonitor {
         stop()
         id = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
             switch e.keyCode {
-            case 123, 33: prev(); return nil   // ← / PageUp
-            case 124, 34, 49: next(); return nil // → / PageDown / Space
-            case 53: exit(); return nil         // Esc
+            case 123, 116: prev(); return nil      // ← / PageUp
+            case 124, 121, 49: next(); return nil  // → / PageDown / Space
+            case 53: exit(); return nil            // Esc
             default: return e
             }
         }
@@ -710,7 +710,9 @@ struct StyleInspector: View {
 }
 
 /// Text field that commits a style after typing settles (or on Enter).
-/// Skips commits triggered by programmatic sync from the selection snapshot.
+/// Skips commits triggered by programmatic sync from the selection snapshot,
+/// and only applies when the SAME element is still selected (debounce races
+/// would otherwise paste the old value onto a newly selected element).
 struct DebouncedStyleField: View {
     @EnvironmentObject var store: EditorStore
     let title: String
@@ -719,15 +721,18 @@ struct DebouncedStyleField: View {
     @Binding var text: String
     let sync: String
     @State private var task: Task<Void, Never>?
+    @State private var capturedLabel: String?
 
     var body: some View {
         InspectorField(title: title, text: $text)
             .onChange(of: text) { _, v in
                 guard v != sync else { return } // echo from snapshot, not user typing
+                capturedLabel = store.selectedLabel
                 task?.cancel()
                 task = Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 550_000_000)
                     guard !Task.isCancelled else { return }
+                    guard store.selectedLabel == capturedLabel, store.styleSnapshot.hasSelection else { return }
                     store.applyStyle([key: v + suffix])
                 }
             }
