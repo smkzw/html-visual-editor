@@ -66,9 +66,6 @@ struct EditorWebView: NSViewRepresentable {
                 return
             }
             dbg("load called \(url.absoluteString)")
-            // Set session cookie so sub-resources (CSS/JS/images) authenticate too.
-            // NOTE: do NOT wait for the setCookie completion — it can be dropped
-            // (observed on macOS 26) and the main load never dispatches.
             var req = URLRequest(url: url)
             if let token {
                 req.setValue(token, forHTTPHeaderField: "X-Project-Token")
@@ -78,7 +75,21 @@ struct EditorWebView: NSViewRepresentable {
                     .value: token, .secure: "FALSE",
                     .expires: Date().addingTimeInterval(86400)
                    ]) {
-                    webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+                    // Sub-resources (css/js) authenticate via cookie only — after a
+                    // session switch the stale cookie 403s every asset (page renders
+                    // as bare text). Wait for the cookie, with a fallback timer
+                    // because the setCookie completion can be dropped.
+                    let jar = webView.configuration.websiteDataStore.httpCookieStore
+                    var done = false
+                    func dispatch() {
+                        guard !done else { return }
+                        done = true
+                        dbg("dispatching load")
+                        webView.load(req)
+                    }
+                    jar.setCookie(cookie) { dispatch() }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { dispatch() }
+                    return
                 }
             }
             dbg("dispatching load")
@@ -192,6 +203,15 @@ struct EditorWebView: NSViewRepresentable {
             default:
                 break
             }
+        }
+
+        /// Links with target=_blank (and right-click "open in new window") ask
+        /// for a second webview. The editor has one canvas — load such links in
+        /// the main canvas instead of failing silently.
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            webView.load(navigationAction.request)
+            return nil
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
@@ -544,26 +564,30 @@ struct EditorWebView: NSViewRepresentable {
             return t||('第 '+(i+1)+' 页');
           }
 
+          let currentSlide=0;
           function detectPPT(){
-            // Only treat as deck when slides are large fixed/absolute layers.
-            // Aggressive `.slide` matching used to hide document sections → blank/black canvas.
+            // Mark + report only. Hiding happens in present() — hiding here
+            // turned scroll-narrative sites into a frozen first page.
             const found=deckCandidates();
             if(found.length>=2){
-              found.forEach((s,i)=>{
-                if(!s.hasAttribute('data-v4-ppt')){
-                  s.setAttribute('data-v4-orig-opacity', s.style.opacity||'');
-                  s.setAttribute('data-v4-orig-pe', s.style.pointerEvents||'');
-                  s.setAttribute('data-v4-orig-transition', s.style.transition||'');
-                  s.style.setProperty('transition','opacity .3s ease','important');
-                }
-                s.setAttribute('data-v4-ppt','1');
-                if(i!==0){ s.style.setProperty('opacity','0','important'); s.style.setProperty('pointer-events','none','important'); }
-                else { s.style.setProperty('opacity','1','important'); s.style.setProperty('pointer-events','auto','important'); }
-              });
+              found.forEach((s)=>{ s.setAttribute('data-v4-ppt','1'); });
+              currentSlide=0;
               postPPT(0, found);
             } else {
               post({type:'ppt', active:false, index:0, count:0, slides:[]});
             }
+          }
+          function applySlideVisibility(){
+            const slides=pptSlides();
+            slides.forEach((s,i)=>{
+              if(!presentMode){
+                s.style.removeProperty('opacity'); s.style.removeProperty('pointer-events');
+              } else if(i===currentSlide){
+                s.style.setProperty('opacity','1','important'); s.style.setProperty('pointer-events','auto','important');
+              } else {
+                s.style.setProperty('opacity','0','important'); s.style.setProperty('pointer-events','none','important');
+              }
+            });
           }
 
           function postPPT(idx, slides){
@@ -580,12 +604,9 @@ struct EditorWebView: NSViewRepresentable {
           }
           function pptGo(i){
             const slides=pptSlides(); if(!slides.length) return;
-            const n=Math.max(0,Math.min(slides.length-1,i));
-            slides.forEach((s,idx)=>{
-              if(idx!==n){ s.style.setProperty('opacity','0','important'); s.style.setProperty('pointer-events','none','important'); }
-              else { s.style.setProperty('opacity','1','important'); s.style.setProperty('pointer-events','auto','important'); }
-            });
-            postPPT(n, slides);
+            currentSlide=Math.max(0,Math.min(slides.length-1,i));
+            if(presentMode){ applySlideVisibility(); }
+            postPPT(currentSlide, slides);
           }
           function pptNav(d){ pptGo(pptCur()+d); }
 
@@ -825,6 +846,7 @@ struct EditorWebView: NSViewRepresentable {
             present(on){
               presentMode=!!on;
               if(on){ deselect(); document.querySelectorAll('.j-handle').forEach(h=>h.remove()); }
+              if(pptSlides().length){ applySlideVisibility(); }
             },
             async save(){
               try{

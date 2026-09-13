@@ -181,17 +181,19 @@ final class EditorStore: ObservableObject {
         selectedTag = nil
         styleSnapshot = .init()
         let base = BackendManager.shared.baseURL
-        // Percent-encode each segment, then build with URL(string:) — NOT
-        // URLComponents.path: the setter re-encodes "%" as "%25", double-encoding
-        // every non-ASCII file name (the real cause of "打开任何 HTML 都 not found").
+        // Token rides in the path: /api/live/<token>/<rel>. WKWebView sub-resource
+        // requests may carry no cookie at all (observed), so header/cookie auth
+        // can't protect them — the injected <base> forwards the token to every
+        // relative reference automatically.
         let encodedRel = page.rel.split(separator: "/").map {
             String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0)
         }.joined(separator: "/")
-        guard let url = URL(string: base.absoluteString + "/api/live/" + encodedRel) else {
+        guard let token = liveToken,
+              let url = URL(string: base.absoluteString + "/api/live/" + token + "/" + encodedRel) else {
             showToast("页面地址无效", icon: "⚠")
             return
         }
-        webView?.load(url: url, token: liveToken)
+        webView?.load(url: url, token: token)
     }
 
     func saveCurrent() {

@@ -141,7 +141,11 @@ final class LocalHTTPServer {
         h += "\r\n"
         var out = Data(h.utf8)
         out.append(data)
-        conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+        conn.send(content: out, completion: .contentProcessed { _ in
+            // contentProcessed = kernel accepted the bytes; an immediate cancel
+            // RSTs large responses mid-flight (WebKit drops the css/js). Drain first.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) { conn.cancel() }
+        })
     }
 
     private static func sendFile(conn: NWConnection, url: URL, mime: String) {
@@ -152,7 +156,11 @@ final class LocalHTTPServer {
         var h = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(data.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
         var out = Data(h.utf8)
         out.append(data)
-        conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+        conn.send(content: out, completion: .contentProcessed { _ in
+            // contentProcessed = kernel accepted the bytes; an immediate cancel
+            // RSTs large responses mid-flight (WebKit drops the css/js). Drain first.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) { conn.cancel() }
+        })
     }
 
     private func jsonOK(_ obj: [String: Any], extra: [String: String] = [:]) -> (Int, String) {
@@ -162,6 +170,7 @@ final class LocalHTTPServer {
 
     private func respond(conn: NWConnection, req: Req, body: Data) {
         let path = req.path.split(separator: "?").first.map(String.init) ?? req.path
+        FileHandle.standardError.write(Data("[req] \(req.method) \(path.prefix(100))\n".utf8))
         let isSafe = req.method == "GET" || req.method == "HEAD"
 
         if !isSafe {
@@ -194,19 +203,21 @@ final class LocalHTTPServer {
                 return
             }
             Self.sendFile(conn: conn, url: fp, mime: "application/octet-stream")
-        case path.hasPrefix("/api/live"):
-            guard tokenOK(req) else {
-                Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json; charset=utf-8")
+        case path.hasPrefix("/api/live/"):
+            // URL-carried session: /api/live/<token>/<rel>. Sub-resource requests
+            // (css/js/img) do not reliably carry cookies in WKWebView (observed:
+            // zero Cookie header after a session switch), so the token must ride
+            // in the path — the injected <base> makes every relative reference
+            // include it automatically.
+            let rest = path.dropFirst("/api/live/".count)
+            let seg = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            let pathToken = seg.first.map(String.init) ?? ""
+            stateLock.lock(); let expected = token; stateLock.unlock()
+            guard !pathToken.isEmpty, pathToken == expected, seg.count == 2 else {
+                Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期，请重新打开文件"}"#, contentType: "application/json; charset=utf-8")
                 return
             }
-            if path == "/api/live" || path == "/api/live/" {
-                Self.send(conn: conn, status: 404, body: Self.errorPage(
-                    title: "页面不存在",
-                    detail: "未指定页面路径。请从 App 内打开具体页面。"),
-                    contentType: "text/html; charset=utf-8")
-                return
-            }
-            live(conn: conn, req: req, rel: String(path.dropFirst("/api/live/".count)))
+            live(conn: conn, req: req, sessionToken: pathToken, rel: String(seg[1]))
         case path.hasPrefix("/api/preview/") && req.method == "GET":
             let tok = path.components(separatedBy: "/").last?.replacingOccurrences(of: ".html", with: "") ?? ""
             stateLock.lock(); let entry = previews[tok]; stateLock.unlock()
@@ -510,7 +521,8 @@ final class LocalHTTPServer {
         Self.send(conn: conn, status: c, body: s, contentType: "application/json; charset=utf-8")
     }
 
-    private func live(conn: NWConnection, req: Req, rel: String) {
+    private func live(conn: NWConnection, req: Req, sessionToken: String, rel: String) {
+        FileHandle.standardError.write(Data("[live] rel=\(rel.prefix(80))\n".utf8))
         stateLock.lock(); let r = root; stateLock.unlock()
         guard let r else {
             Self.send(conn: conn, status: 400, body: #"{"detail":"尚未打开项目"}"#, contentType: "application/json; charset=utf-8")
@@ -545,6 +557,7 @@ final class LocalHTTPServer {
         default: mime = "application/octet-stream"
         }
         guard FileManager.default.fileExists(atPath: target.path) else {
+            FileHandle.standardError.write(Data("[live] MISS target=\(target.path)\n".utf8))
             // Friendly light-styled page — a bare JSON 404 renders as an
             // unreadable black screen in the webview (dark default text).
             Self.send(conn: conn, status: 404, body: Self.errorPage(
@@ -569,7 +582,9 @@ final class LocalHTTPServer {
                     .replacingOccurrences(of: "<", with: "&lt;")
                     .replacingOccurrences(of: ">", with: "&gt;")
             }
-            let baseHref = dirRel.isEmpty ? "/api/live/" : "/api/live/" + esc(dirRel) + "/"
+            let baseHref = dirRel.isEmpty
+                ? "/api/live/\(sessionToken)/"
+                : "/api/live/\(sessionToken)/" + esc(dirRel) + "/"
             let baseTag = "<base href=\"\(baseHref)\">"
             if let r = html.range(of: "<head[^>]*>", options: .regularExpression) {
                 html.insert(contentsOf: baseTag, at: r.upperBound)
@@ -579,9 +594,18 @@ final class LocalHTTPServer {
                 html = baseTag + html
             }
             let data = Data(html.utf8)
-            var h = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(data.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+            // Re-issue the session cookie on every main-document response: after
+            // a session switch the webview's sub-resource requests carry only
+            // the cookie (no header), and a stale one kills every CSS/JS file
+            // (page renders as bare text).
+            let cookie = "project_token=\(stateLock.withLock { token ?? "" }); Path=/; HttpOnly; SameSite=Lax"
+            var h = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(data.count)\r\nConnection: close\r\nCache-Control: no-store\r\nSet-Cookie: \(cookie)\r\n\r\n"
             var out = Data(h.utf8); out.append(data)
-            conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+            conn.send(content: out, completion: .contentProcessed { _ in
+            // contentProcessed = kernel accepted the bytes; an immediate cancel
+            // RSTs large responses mid-flight (WebKit drops the css/js). Drain first.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) { conn.cancel() }
+        })
             return
         }
         Self.sendFile(conn: conn, url: target, mime: mime)
