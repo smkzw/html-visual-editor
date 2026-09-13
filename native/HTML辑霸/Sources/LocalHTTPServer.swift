@@ -72,7 +72,7 @@ final class LocalHTTPServer {
         // at most a few MB). Prevents unbounded memory growth.
         let maxRequest: Int = 64 * 1024 * 1024
         if buffer.count > maxRequest {
-            Self.send(conn: conn, status: 413, body: #"{"detail":"请求过大"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 413, body: #"{"detail":"请求过大"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
@@ -85,7 +85,7 @@ final class LocalHTTPServer {
                 if let req = Self.parseRequest(head: head) {
                     let need = req.contentLength
                     guard need >= 0, buf.count - (bodyStart.startIndex - buf.startIndex) <= maxRequest else {
-                        Self.send(conn: conn, status: 400, body: #"{"detail":"bad request length"}"#, contentType: "application/json")
+                        Self.send(conn: conn, status: 400, body: #"{"detail":"bad request length"}"#, contentType: "application/json; charset=utf-8")
                         return
                     }
                     if bodyStart.count >= need {
@@ -96,7 +96,7 @@ final class LocalHTTPServer {
                     self.receive(conn: conn, buffer: buf)
                     return
                 }
-                Self.send(conn: conn, status: 400, body: #"{"detail":"bad request"}"#, contentType: "application/json")
+                Self.send(conn: conn, status: 400, body: #"{"detail":"bad request"}"#, contentType: "application/json; charset=utf-8")
                 return
             }
             if isComplete || error != nil {
@@ -146,7 +146,7 @@ final class LocalHTTPServer {
 
     private static func sendFile(conn: NWConnection, url: URL, mime: String) {
         guard let data = try? Data(contentsOf: url) else {
-            send(conn: conn, status: 404, body: #"{"detail":"not found"}"#, contentType: "application/json")
+            send(conn: conn, status: 404, body: #"{"detail":"not found"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         var h = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(data.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
@@ -169,7 +169,7 @@ final class LocalHTTPServer {
             let allowed = ["127.0.0.1:\(port)", "localhost:\(port)"]
             let xrw = req.headers["x-requested-with"] ?? ""
             if !allowed.contains(host) || xrw.isEmpty {
-                Self.send(conn: conn, status: 403, body: #"{"detail":"CSRF"}"#, contentType: "application/json")
+                Self.send(conn: conn, status: 403, body: #"{"detail":"CSRF"}"#, contentType: "application/json; charset=utf-8")
                 return
             }
         }
@@ -177,7 +177,7 @@ final class LocalHTTPServer {
         switch true {
         case path == "/api/info":
             let (c, s) = jsonOK(["platform": "macos", "native_picker": true])
-            Self.send(conn: conn, status: c, body: s, contentType: "application/json")
+            Self.send(conn: conn, status: c, body: s, contentType: "application/json; charset=utf-8")
         case path == "/" || path == "/index.html":
             // The bundled legacy web editor is not served at "/" — it was kept for
             // reference but its session protocol diverged from this engine and it
@@ -190,13 +190,13 @@ final class LocalHTTPServer {
             let rel = String(path.dropFirst("/static/".count))
             let fp = staticDir.appendingPathComponent(rel).standardizedFileURL
             guard fp.path.hasPrefix(staticDir.path + "/") else {
-                Self.send(conn: conn, status: 403, body: #"{"detail":"forbidden"}"#, contentType: "application/json")
+                Self.send(conn: conn, status: 403, body: #"{"detail":"forbidden"}"#, contentType: "application/json; charset=utf-8")
                 return
             }
             Self.sendFile(conn: conn, url: fp, mime: "application/octet-stream")
         case path.hasPrefix("/api/live"):
             guard tokenOK(req) else {
-                Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json")
+                Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json; charset=utf-8")
                 return
             }
             if path == "/api/live" || path == "/api/live/" {
@@ -213,7 +213,7 @@ final class LocalHTTPServer {
             if let entry {
                 Self.send(conn: conn, status: 200, body: entry.html, contentType: "text/html; charset=utf-8")
             } else {
-                Self.send(conn: conn, status: 403, body: #"{"detail":"预览无效"}"#, contentType: "application/json")
+                Self.send(conn: conn, status: 403, body: #"{"detail":"预览无效"}"#, contentType: "application/json; charset=utf-8")
             }
         case path == "/api/project/open" && req.method == "POST":
             projectOpen(conn: conn, body: body)
@@ -226,7 +226,7 @@ final class LocalHTTPServer {
         case path == "/api/analyze" && req.method == "POST":
             analyze(conn: conn, body: body)
         case path.hasPrefix("/api/") || path.hasPrefix("/api"):
-            Self.send(conn: conn, status: 404, body: #"{"detail":"not found"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 404, body: #"{"detail":"not found"}"#, contentType: "application/json; charset=utf-8")
         default:
             // Root-relative resources (/style.css, /about, /favicon.ico): when a
             // project is open, resolve them against the project root so real
@@ -238,7 +238,7 @@ final class LocalHTTPServer {
                     let rel = raw.removingPercentEncoding ?? raw
                     var target = r.appendingPathComponent(rel).standardizedFileURL
                     guard target.path.hasPrefix(r.path + "/") else {
-                        Self.send(conn: conn, status: 403, body: #"{"detail":"路径越界"}"#, contentType: "application/json")
+                        Self.send(conn: conn, status: 403, body: #"{"detail":"路径越界"}"#, contentType: "application/json; charset=utf-8")
                         return
                     }
                     var isDir: ObjCBool = false
@@ -252,7 +252,7 @@ final class LocalHTTPServer {
                         case "html", "htm": mime = "text/html; charset=utf-8"
                         case "css": mime = "text/css; charset=utf-8"
                         case "js", "mjs": mime = "application/javascript; charset=utf-8"
-                        case "json": mime = "application/json"
+                        case "json": mime = "application/json; charset=utf-8"
                         case "svg": mime = "image/svg+xml"
                         case "png": mime = "image/png"
                         case "jpg", "jpeg": mime = "image/jpeg"
@@ -269,7 +269,7 @@ final class LocalHTTPServer {
                     }
                 }
             }
-            Self.send(conn: conn, status: 404, body: #"{"detail":"not found"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 404, body: #"{"detail":"not found"}"#, contentType: "application/json; charset=utf-8")
         }
     }
 
@@ -289,7 +289,7 @@ final class LocalHTTPServer {
         let p = URL(fileURLWithPath: raw).standardizedFileURL
         let d = file.isEmpty ? p : p.deletingLastPathComponent()
         guard d.path.hasPrefix(home.path + "/") || d.path == home.path else {
-            Self.send(conn: conn, status: 403, body: #"{"detail":"项目必须在用户主目录内"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 403, body: #"{"detail":"项目必须在用户主目录内"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         // Existence check — a missing path must not yield a fake empty project
@@ -297,15 +297,15 @@ final class LocalHTTPServer {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: p.path, isDirectory: &isDir) else {
             let (_, body) = jsonOK(["detail": "文件或目录不存在：\(raw)"])
-            Self.send(conn: conn, status: 404, body: body, contentType: "application/json")
+            Self.send(conn: conn, status: 404, body: body, contentType: "application/json; charset=utf-8")
             return
         }
         if file.isEmpty && !isDir.boolValue {
-            Self.send(conn: conn, status: 400, body: #"{"detail":"所选路径不是文件夹"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 400, body: #"{"detail":"所选路径不是文件夹"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         if !file.isEmpty && isDir.boolValue {
-            Self.send(conn: conn, status: 400, body: #"{"detail":"所选路径是文件夹，请用打开文件夹"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 400, body: #"{"detail":"所选路径是文件夹，请用打开文件夹"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         var files: [[String: Any]] = []
@@ -358,29 +358,29 @@ final class LocalHTTPServer {
         // Session cookie for web-origin requests (the native app sends the header;
         // browser-loaded pages can only authenticate via cookie).
         let cookie = "project_token=\(tok); Path=/; HttpOnly; SameSite=Lax"
-        Self.send(conn: conn, status: 200, body: s, contentType: "application/json",
+        Self.send(conn: conn, status: 200, body: s, contentType: "application/json; charset=utf-8",
                   extra: ["Set-Cookie": cookie])
     }
 
     private func projectRead(conn: NWConnection, req: Req, body: Data) {
         guard tokenOK(req) else {
-            Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
         let path = obj["path"] as? String ?? ""
         stateLock.lock(); let r = root; stateLock.unlock()
         guard let r else {
-            Self.send(conn: conn, status: 403, body: #"{"detail":"请先打开项目"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 403, body: #"{"detail":"请先打开项目"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         let p = URL(fileURLWithPath: path).standardizedFileURL
         guard p.path.hasPrefix(r.path + "/") else {
-            Self.send(conn: conn, status: 403, body: #"{"detail":"文件必须在项目内"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 403, body: #"{"detail":"文件必须在项目内"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         guard let content = try? String(contentsOf: p, encoding: .utf8) else {
-            Self.send(conn: conn, status: 404, body: #"{"detail":"无法读取"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 404, body: #"{"detail":"无法读取"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         let st = (try? FileManager.default.attributesOfItem(atPath: p.path)) ?? [:]
@@ -391,12 +391,12 @@ final class LocalHTTPServer {
             "mtime": (st[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
         ]
         let (c, s) = jsonOK(payload)
-        Self.send(conn: conn, status: c, body: s, contentType: "application/json")
+        Self.send(conn: conn, status: c, body: s, contentType: "application/json; charset=utf-8")
     }
 
     private func projectSave(conn: NWConnection, req: Req, body: Data) {
         guard tokenOK(req) else {
-            Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 403, body: #"{"detail":"项目会话已过期"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
@@ -405,17 +405,17 @@ final class LocalHTTPServer {
         let mtime = obj["mtime"] as? Double ?? 0
         stateLock.lock(); let r = root; stateLock.unlock()
         guard let r else {
-            Self.send(conn: conn, status: 403, body: #"{"detail":"请先打开项目"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 403, body: #"{"detail":"请先打开项目"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         let p = URL(fileURLWithPath: path).standardizedFileURL
         guard p.path.hasPrefix(r.path + "/") else {
-            Self.send(conn: conn, status: 403, body: #"{"detail":"不在项目内"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 403, body: #"{"detail":"不在项目内"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: p.path, isDirectory: &isDir), !isDir.boolValue else {
-            Self.send(conn: conn, status: 400, body: #"{"detail":"保存目标不是文件"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 400, body: #"{"detail":"保存目标不是文件"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         let fm = FileManager.default
@@ -423,7 +423,7 @@ final class LocalHTTPServer {
             let st = (try? fm.attributesOfItem(atPath: p.path)) ?? [:]
             let cur = (st[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
             if abs(cur - mtime) > 1.0 {
-                Self.send(conn: conn, status: 409, body: #"{"detail":"文件已被外部修改"}"#, contentType: "application/json")
+                Self.send(conn: conn, status: 409, body: #"{"detail":"文件已被外部修改"}"#, contentType: "application/json; charset=utf-8")
                 return
             }
             // Millisecond stamp + rotation: same-second saves must not clobber
@@ -442,14 +442,14 @@ final class LocalHTTPServer {
                     Self.rotateBackups(of: target, keep: 20)
                 }
             } catch {
-                Self.send(conn: conn, status: 500, body: "{\"detail\":\"备份失败，未写入: \(error.localizedDescription)\"}", contentType: "application/json")
+                Self.send(conn: conn, status: 500, body: "{\"detail\":\"备份失败，未写入: \(error.localizedDescription)\"}", contentType: "application/json; charset=utf-8")
                 return
             }
         }
         do {
             try content.write(to: p, atomically: true, encoding: .utf8)
         } catch {
-            Self.send(conn: conn, status: 500, body: "{\"detail\":\"写入失败: \(error.localizedDescription)\"}", contentType: "application/json")
+            Self.send(conn: conn, status: 500, body: "{\"detail\":\"写入失败: \(error.localizedDescription)\"}", contentType: "application/json; charset=utf-8")
             return
         }
         let st = (try? fm.attributesOfItem(atPath: p.path)) ?? [:]
@@ -457,7 +457,7 @@ final class LocalHTTPServer {
             "ok": true, "path": p.path, "size": content.utf8.count,
             "mtime": (st[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
         ])
-        Self.send(conn: conn, status: c, body: s, contentType: "application/json")
+        Self.send(conn: conn, status: c, body: s, contentType: "application/json; charset=utf-8")
     }
 
     /// Keep the `keep` most recently MODIFIED .bak files next to `p`.
@@ -490,7 +490,7 @@ final class LocalHTTPServer {
         previews[tok] = (html, now)
         stateLock.unlock()
         let (c, s) = jsonOK(["ok": true, "url": "/api/preview/\(tok).html"])
-        Self.send(conn: conn, status: c, body: s, contentType: "application/json")
+        Self.send(conn: conn, status: c, body: s, contentType: "application/json; charset=utf-8")
     }
 
     private func analyze(conn: NWConnection, body: Data) {
@@ -499,7 +499,7 @@ final class LocalHTTPServer {
         let p = URL(fileURLWithPath: path).standardizedFileURL
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: p.path, isDirectory: &isDir) else {
-            Self.send(conn: conn, status: 404, body: #"{"detail":"不存在"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 404, body: #"{"detail":"不存在"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         let mode = isDir.boolValue ? "site" : "single"
@@ -507,19 +507,19 @@ final class LocalHTTPServer {
             "ok": true, "mode": mode, "dir": p.deletingLastPathComponent().path,
             "file": p.path, "entry": p.path, "html_count": 1, "reason": "本地文件",
         ])
-        Self.send(conn: conn, status: c, body: s, contentType: "application/json")
+        Self.send(conn: conn, status: c, body: s, contentType: "application/json; charset=utf-8")
     }
 
     private func live(conn: NWConnection, req: Req, rel: String) {
         stateLock.lock(); let r = root; stateLock.unlock()
         guard let r else {
-            Self.send(conn: conn, status: 400, body: #"{"detail":"尚未打开项目"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 400, body: #"{"detail":"尚未打开项目"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         let decoded = rel.removingPercentEncoding ?? rel
         var target = r.appendingPathComponent(decoded).standardizedFileURL
         if !target.path.hasPrefix(r.path + "/") {
-            Self.send(conn: conn, status: 403, body: #"{"detail":"路径越界"}"#, contentType: "application/json")
+            Self.send(conn: conn, status: 403, body: #"{"detail":"路径越界"}"#, contentType: "application/json; charset=utf-8")
             return
         }
         var isDir: ObjCBool = false
@@ -532,7 +532,7 @@ final class LocalHTTPServer {
         case "html", "htm": mime = "text/html; charset=utf-8"
         case "css": mime = "text/css; charset=utf-8"
         case "js", "mjs": mime = "application/javascript; charset=utf-8"
-        case "json": mime = "application/json"
+        case "json": mime = "application/json; charset=utf-8"
         case "svg": mime = "image/svg+xml"
         case "png": mime = "image/png"
         case "jpg", "jpeg": mime = "image/jpeg"

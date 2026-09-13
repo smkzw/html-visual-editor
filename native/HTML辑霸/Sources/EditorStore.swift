@@ -169,19 +169,25 @@ final class EditorStore: ObservableObject {
     }
 
     private func performLoad(_ page: PageFile) {
+        // macOS window restoration can hand us a page with no live session
+        // (fresh process, restored view state). Re-open the file first so
+        // root/token exist — otherwise the load 403s with a bare JSON page.
+        if liveToken == nil || project == nil, FileManager.default.fileExists(atPath: page.path) {
+            openSingleFile(path: page.path)
+            return
+        }
         currentPage = page
         dirty = false
         selectedTag = nil
         styleSnapshot = .init()
         let base = BackendManager.shared.baseURL
-        // DO NOT use appendingPathComponent("api/live/xxx") — it percent-encodes "/" as %2F
-        // and every live page becomes a blank 404.
-        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        // Percent-encode each segment, then build with URL(string:) — NOT
+        // URLComponents.path: the setter re-encodes "%" as "%25", double-encoding
+        // every non-ASCII file name (the real cause of "打开任何 HTML 都 not found").
         let encodedRel = page.rel.split(separator: "/").map {
             String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0)
         }.joined(separator: "/")
-        comps.path = "/api/live/" + encodedRel
-        guard let url = comps.url else {
+        guard let url = URL(string: base.absoluteString + "/api/live/" + encodedRel) else {
             showToast("页面地址无效", icon: "⚠")
             return
         }

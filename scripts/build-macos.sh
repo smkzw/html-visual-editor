@@ -78,6 +78,10 @@ cat > "$APP/Contents/Info.plist" << PLIST
   <string>15.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSRequiresAquaSystemAppearance</key>
+  <true/>
+  <key>NSQuitAlwaysKeepsWindows</key>
+  <false/>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>LSApplicationCategoryType</key>

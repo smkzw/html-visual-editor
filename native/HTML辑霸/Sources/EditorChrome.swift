@@ -3,32 +3,43 @@ import AppKit
 
 /// Main editor chrome: glass toolbar + sidebar + canvas + inspector.
 /// Presenting hides the chrome and gives the canvas the full window.
+/// The inspector is hidden by default — the canvas owns the window — and
+/// slides in when an element gets selected (PowerPoint behavior).
 struct EditorChromeView: View {
     @EnvironmentObject var store: EditorStore
-    @State private var sidebarCollapsed = false
+    @AppStorage("sidebarCollapsed") private var sidebarCollapsed = false
+    @AppStorage("inspectorCollapsed") private var inspectorCollapsed = true
     @State private var inspectorTab = 0
 
     var body: some View {
         VStack(spacing: 0) {
             if !store.presenting {
-                GlassToolbar(sidebarCollapsed: $sidebarCollapsed, inspectorTab: $inspectorTab)
+                GlassToolbar(sidebarCollapsed: $sidebarCollapsed,
+                             inspectorCollapsed: $inspectorCollapsed,
+                             inspectorTab: $inspectorTab)
             }
             HStack(spacing: 0) {
                 if !sidebarCollapsed && !store.presenting {
                     SidebarPanel()
-                        .frame(width: 220)
+                        .frame(width: 176)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
                 CanvasArea(presenting: store.presenting)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if !store.presenting {
+                if !inspectorCollapsed && !store.presenting {
                     InspectorPanel(tab: $inspectorTab)
-                        .frame(width: 280)
+                        .frame(width: 272)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
         }
         .animation(.smooth(duration: 0.22), value: sidebarCollapsed)
+        .animation(.smooth(duration: 0.22), value: inspectorCollapsed)
         .animation(.smooth(duration: 0.25), value: store.presenting)
+        .onChange(of: store.selectedTag) { _, tag in
+            // Selecting something on the canvas brings the inspector in.
+            if tag != nil, inspectorCollapsed { inspectorCollapsed = false }
+        }
     }
 }
 
@@ -37,6 +48,7 @@ struct EditorChromeView: View {
 struct GlassToolbar: View {
     @EnvironmentObject var store: EditorStore
     @Binding var sidebarCollapsed: Bool
+    @Binding var inspectorCollapsed: Bool
     @Binding var inspectorTab: Int
     @State private var imageURL = ""
     @State private var showInsert = false
@@ -49,6 +61,9 @@ struct GlassToolbar: View {
             HStack(spacing: 10) {
                 ToolbarIcon(systemImage: sidebarCollapsed ? "sidebar.left" : "sidebar.squares.left") {
                     sidebarCollapsed.toggle()
+                }
+                ToolbarIcon(systemImage: inspectorCollapsed ? "sidebar.right" : "sidebar.squares.right") {
+                    inspectorCollapsed.toggle()
                 }
                 ToolbarIcon(systemImage: "folder") { store.pickAndOpen(preferFile: true) }
                 ToolbarIcon(systemImage: "house") { store.goHome() }
@@ -402,9 +417,9 @@ struct CanvasArea: View {
 
     var body: some View {
         GeometryReader { geo in
-            let fit = min(1.25, max(0.15, min(
-                (geo.size.width - 48) / max(store.deviceW, 1),
-                (geo.size.height - 56) / max(store.deviceH, 1))))
+            let fit = min(2.0, max(0.15, min(
+                (geo.size.width - 28) / max(store.deviceW, 1),
+                (geo.size.height - 44) / max(store.deviceH, 1))))
             // Present: cover the whole stage. Edit: fit × user zoom (scrollable when larger).
             // NOTE: the view structure below must NOT depend on `presenting` —
             // branching would rebuild the WKWebView and reload (losing edits).
@@ -418,7 +433,7 @@ struct CanvasArea: View {
                 canvas(scale: scale, visW: presenting ? max(visW, geo.size.width) : visW,
                        visH: presenting ? max(visH, geo.size.height) : visH)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(presenting ? 0 : 24)
+                    .padding(presenting ? 0 : 14)
             }
             .defaultScrollAnchor(.center)
             .scrollDisabled(presenting)
